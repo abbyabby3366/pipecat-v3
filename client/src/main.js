@@ -224,6 +224,11 @@ async function startCall() {
       currentUserText = '';
     });
 
+    client.on(RTVIEvent.BotStartedSpeaking, () => {
+      setAgentState('speaking', '正在回答...');
+      moveSphereDown();
+    });
+
     client.on(RTVIEvent.BotStoppedSpeaking, () => {
       setAgentState('idle', '请说话...');
       currentBotMsgElement = null;
