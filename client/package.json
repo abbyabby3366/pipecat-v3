@@ -1,0 +1,20 @@
+{
+  "name": "pipecat-voice-ui",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@pipecat-ai/client-js": "^1.10.5",
+    "@pipecat-ai/small-webrtc-transport": "^1.10.5",
+    "lucide": "^0.475.0",
+    "ogl": "^1.0.11"
+  },
+  "devDependencies": {
+    "vite": "^6.1.0"
+  }
+}

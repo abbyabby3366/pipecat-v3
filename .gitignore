@@ -37,6 +37,13 @@ MANIFEST
 .env*
 fly.toml
 
+# Node / Frontend Client
+node_modules/
+client/node_modules/
+client/dist/
+client/.vite/
+*.local
+
 # Examples
 examples/**/node_modules/
 examples/**/.expo/

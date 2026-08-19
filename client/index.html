@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Arkie AI Voice Agent</title>
+  
+  <!-- Modern Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@500;600;700;800&family=Noto+Sans+SC:wght@400;500;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  
+  <link rel="stylesheet" href="/src/styles/index.css" />
+</head>
+<body class="dark-theme">
+  <!-- Background Aurora Canvas -->
+  <canvas id="aurora-canvas" class="aurora-bg"></canvas>
+
+  <!-- App Wrapper -->
+  <div id="app-layout" class="app-layout">
+    <!-- Top Discreet Header -->
+    <header class="app-header">
+      <div class="brand-section">
+        <div class="logo-badge">
+          <span class="logo-dot"></span>
+          <span class="logo-text">arkieai.agent</span>
+        </div>
+      </div>
+
+      <div class="header-actions">
+        <!-- Live Connection Status -->
+        <div id="connection-badge" class="status-badge" data-state="disconnected">
+          <span class="status-dot"></span>
+          <span id="connection-status-text" class="status-label">就绪</span>
+        </div>
+
+        <!-- Latency HUD Toggle -->
+        <button id="toggle-metrics-btn" class="icon-btn glass-btn" title="延迟性能监控">
+          <i data-lucide="activity"></i>
+        </button>
+
+        <!-- Drawer Toggle Button -->
+        <button id="toggle-drawer-btn" class="icon-btn glass-btn" title="知识库与详细遥测">
+          <i data-lucide="info"></i>
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Scrollable Conversation History Stream (Visible when in Active Call) -->
+    <div id="conversation-stream" class="conversation-stream hidden">
+      <div id="conversation-messages" class="conversation-messages">
+        <!-- Chat bubbles dynamically appended here -->
+      </div>
+    </div>
+
+    <!-- Main Visual Stage (Centerpiece Orb when on Standby) -->
+    <main id="visual-stage" class="visual-stage">
+      <!-- Orb & Spoken Words Container -->
+      <div id="orb-wrapper" class="orb-container">
+        <canvas id="orb-canvas" width="600" height="600" class="orb-canvas"></canvas>
+        <div class="orb-glow-halo"></div>
+
+        <!-- Initial Greeting Text Inside Orb -->
+        <div id="orb-text-overlay" class="orb-text-overlay">
+          <p id="orb-spoken-text" class="orb-spoken-text">嘿，你好</p>
+        </div>
+      </div>
+
+      <!-- State Indicator Pill -->
+      <div id="agent-state-pill" class="agent-state-pill" data-state="idle">
+        <span class="state-icon">✨</span>
+        <span id="agent-state-text" class="state-text">准备就绪</span>
+      </div>
+    </main>
+
+    <!-- Bottom Actions & Phone Controls -->
+    <footer class="bottom-action-bar">
+      <!-- Disconnected State: Start Call Button -->
+      <div id="start-call-container" class="start-call-container">
+        <button id="call-btn" class="primary-call-btn">
+          <i data-lucide="phone" class="btn-icon"></i>
+          <span id="call-btn-text">开始语音通话</span>
+        </button>
+      </div>
+
+      <!-- Connected State: Dual Circle Buttons (Mute on Left, Red End Call on Right, Mini Orb Centered) -->
+      <div id="connected-controls-container" class="connected-controls-container hidden">
+        <!-- Mute Button Group -->
+        <div class="control-group">
+          <button id="mic-btn" class="circle-btn glass-btn" title="静音">
+            <i data-lucide="mic" id="mic-icon"></i>
+          </button>
+          <span id="mic-label" class="control-label">静音</span>
+        </div>
+
+        <!-- Center slot where the mini-orb docks -->
+        <div class="bottom-orb-slot"></div>
+
+        <!-- End Call Button Group -->
+        <div class="control-group">
+          <button id="end-call-btn" class="circle-btn end-btn" title="结束通话">
+            <i data-lucide="phone-off" class="end-icon"></i>
+          </button>
+          <span class="control-label">结束</span>
+        </div>
+      </div>
+    </footer>
+
+    <!-- Side Metrics & Knowledge Base Info Drawer -->
+    <aside id="side-drawer" class="side-drawer glass-panel closed">
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <i data-lucide="terminal"></i>
+          <h3>实时性能与工具遥测</h3>
+        </div>
+        <button id="close-drawer-btn" class="icon-btn-sm">
+          <i data-lucide="x"></i>
+        </button>
+      </div>
+
+      <!-- Real-time Latency Metrics HUD Card -->
+      <div class="metrics-hud-card glass-inner">
+        <div class="metrics-header">
+          <span class="hud-title">⚡ 极速响应延迟分析</span>
+          <span id="e2e-badge" class="e2e-badge">总延迟: -- ms</span>
+        </div>
+        <div class="metrics-grid">
+          <div class="metric-item">
+            <span class="metric-label">🎙️ STT (Cartesia)</span>
+            <span id="metric-stt" class="metric-value">-- ms</span>
+          </div>
+          <div class="metric-item">
+            <span class="metric-label">🧠 LLM 首字 (Cerebras)</span>
+            <span id="metric-llm" class="metric-value highlight">-- ms</span>
+          </div>
+          <div class="metric-item">
+            <span class="metric-label">🔊 TTS 首包 (Cartesia)</span>
+            <span id="metric-tts" class="metric-value">-- ms</span>
+          </div>
+          <div class="metric-item">
+            <span class="metric-label">🛠️ 工具耗时 (KB/Search)</span>
+            <span id="metric-tools" class="metric-value">-- ms</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tool Activity Log -->
+      <div id="tool-activity-feed" class="tool-activity-feed">
+        <div class="system-intro-card glass-inner">
+          <p>👋 <strong>实时语音连接中</strong>。支持 <strong>Misuedi ARK 知识库</strong>检索与 <strong>Parallel 实时搜索</strong>。</p>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- Hidden WebRTC Audio Sink for bot audio playback -->
+  <audio id="bot-audio" autoplay playsinline></audio>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
