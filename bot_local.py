@@ -1,6 +1,7 @@
 import asyncio
 import os
 import sys
+import time
 
 import aiohttp
 from dotenv import load_dotenv
@@ -16,6 +17,7 @@ from pipecat.frames.frames import (
     TranscriptionFrame,
     TTSSpeakFrame,
 )
+from pipecat.observers.user_bot_latency_observer import UserBotLatencyObserver
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
 from pipecat.processors.aggregators.llm_context import LLMContext
@@ -37,39 +39,98 @@ load_dotenv(override=True)
 logger.remove(0)
 logger.add(sys.stderr, level="INFO")
 
+SHOW_LATENCY = os.getenv("SHOW_LATENCY_METRICS", "false").strip().lower() in ("true", "1", "yes")
+
 
 class UserTranscriptLogger(FrameProcessor):
     """Prints recognized user speech to the terminal."""
+
+    def __init__(self, bot_logger=None):
+        super().__init__()
+        self.bot_logger = bot_logger
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
         if isinstance(frame, TranscriptionFrame):
             if frame.text and frame.text.strip():
+                if self.bot_logger and SHOW_LATENCY:
+                    self.bot_logger.mark_user_speech()
                 print(f"\n🗣️  [用户/User]: {frame.text.strip()}", flush=True)
 
         await self.push_frame(frame, direction)
 
 
 class BotTranscriptLogger(FrameProcessor):
-    """Prints streaming bot speech tokens to the terminal."""
+    """Prints streaming bot speech tokens to the terminal and displays latency report underneath."""
 
     def __init__(self):
         super().__init__()
         self._in_bot_response = False
+        self._user_speech_time = None
+        self._pending_breakdown = None
+        self._pending_total_latency = None
+
+    def mark_user_speech(self):
+        self._user_speech_time = time.time()
+
+    def set_latency_breakdown(self, breakdown):
+        self._pending_breakdown = breakdown
+        # If response has already finished, print immediately
+        if not self._in_bot_response and (self._pending_breakdown or self._pending_total_latency):
+            self.print_latency_report()
+
+    def set_total_latency(self, total_secs):
+        self._pending_total_latency = total_secs
+        # If response has already finished, print immediately
+        if not self._in_bot_response and (self._pending_breakdown or self._pending_total_latency):
+            self.print_latency_report()
+
+    def print_latency_report(self):
+        if not SHOW_LATENCY:
+            return
+        if self._pending_breakdown is not None:
+            bd = self._pending_breakdown
+            print("\n⏱️  [延迟分析 / Latency Breakdown]:", flush=True)
+            if bd.user_turn_secs is not None:
+                print(f"   • 🎙️ VAD静音检测 & Cartesia STT语音识别结算: {bd.user_turn_secs * 1000:.0f} ms", flush=True)
+            for t in bd.ttfb:
+                proc_label = (
+                    t.processor
+                    .replace("OpenRouterLLMService#0", "🧠 LLM (Cerebras)")
+                    .replace("CartesiaTTSService#0", "🔊 TTS (Cartesia)")
+                    .replace("CartesiaSTTService#0", "🎙️ STT (Cartesia)")
+                )
+                print(f"   • ⚡ {proc_label} 首字/首包 (TTFB/TTFT): {t.duration_secs * 1000:.0f} ms", flush=True)
+            for fc in bd.function_calls:
+                print(f"   • 🛠️ 工具调用 [{fc.function_name}]: {fc.duration_secs * 1000:.0f} ms", flush=True)
+            if bd.text_aggregation:
+                print(f"   • 📝 文本切分与聚合耗时: {bd.text_aggregation.duration_secs * 1000:.0f} ms", flush=True)
+            self._pending_breakdown = None
+
+        if self._pending_total_latency is not None:
+            print(f"   🚀 端到端语音响应总延迟: {self._pending_total_latency * 1000:.0f} ms\n", flush=True)
+            self._pending_total_latency = None
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
         if isinstance(frame, TextFrame) and not isinstance(frame, (TranscriptionFrame, InterimTranscriptionFrame)):
             if not self._in_bot_response:
-                print("\n🤖 [助手/Bot]: ", end="", flush=True)
+                ttft_info = ""
+                if SHOW_LATENCY and self._user_speech_time:
+                    ttft_ms = (time.time() - self._user_speech_time) * 1000
+                    ttft_info = f" ⚡[首字/TTFT: {ttft_ms:.0f}ms]"
+                print(f"\n🤖 [助手/Bot]{ttft_info}: ", end="", flush=True)
                 self._in_bot_response = True
             print(frame.text, end="", flush=True)
         elif isinstance(frame, LLMFullResponseEndFrame):
             if self._in_bot_response:
                 print("", flush=True)
                 self._in_bot_response = False
+                self._user_speech_time = None
+                # Print buffered latency report cleanly at the bottom!
+                self.print_latency_report()
 
         await self.push_frame(frame, direction)
 
@@ -98,6 +159,7 @@ async def search_knowledge_base(params: FunctionCallParams, query: str):
     }
 
     print(f"\n📚 [知识库/KB]: 正在检索知识库 '{query}' ...", flush=True)
+    t_start = time.time()
 
     async def _do_retrieve(method: str):
         payload = {
@@ -119,6 +181,9 @@ async def search_knowledge_base(params: FunctionCallParams, query: str):
             # Fallback to keyword_search if semantic search returned 400
             status, data = await _do_retrieve("keyword_search")
 
+        dur_ms = (time.time() - t_start) * 1000
+        timing_str = f" (耗时: {dur_ms:.0f}ms)" if SHOW_LATENCY else ""
+
         if status == 200 and isinstance(data, dict):
             records = data.get("records", [])
             simplified = []
@@ -133,7 +198,7 @@ async def search_knowledge_base(params: FunctionCallParams, query: str):
                     "content": content,
                 })
 
-            print(f"✅ [知识库/KB]: 成功匹配到 {len(simplified)} 条知识库记录:", flush=True)
+            print(f"✅ [知识库/KB]: 成功匹配到 {len(simplified)} 条知识库记录{timing_str}:", flush=True)
             for i, item in enumerate(simplified, 1):
                 doc_name = item.get("document")
                 score = item.get("score")
@@ -143,10 +208,12 @@ async def search_knowledge_base(params: FunctionCallParams, query: str):
 
             await params.result_callback({"records": simplified})
         else:
-            print(f"⚠️ [知识库/KB]: 检索失败 (Status {status}): {data}", flush=True)
+            print(f"⚠️ [知识库/KB]: 检索失败 (Status {status}{timing_str}): {data}", flush=True)
             await params.result_callback({"error": f"HTTP {status}: {data}"})
     except Exception as e:
-        print(f"⚠️ [知识库/KB]: 发生异常: {e}", flush=True)
+        dur_ms = (time.time() - t_start) * 1000
+        timing_str = f" (耗时: {dur_ms:.0f}ms)" if SHOW_LATENCY else ""
+        print(f"⚠️ [知识库/KB]: 发生异常{timing_str}: {e}", flush=True)
         await params.result_callback({"error": f"KB search failed: {str(e)}"})
 
 
@@ -175,10 +242,14 @@ async def search_web(params: FunctionCallParams, query: str):
     }
 
     print(f"\n🌐 [网络搜索/Search]: 正在查询 '{query}' ...", flush=True)
+    t_start = time.time()
 
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=6)) as resp:
+                dur_ms = (time.time() - t_start) * 1000
+                timing_str = f" (耗时: {dur_ms:.0f}ms)" if SHOW_LATENCY else ""
+
                 if resp.status == 200:
                     data = await resp.json()
                     results = data.get("results", [])
@@ -190,7 +261,7 @@ async def search_web(params: FunctionCallParams, query: str):
                             "url": r.get("url", ""),
                             "snippet": excerpts,
                         })
-                    print(f"✅ [网络搜索/Search]: 成功获取 {len(simplified)} 条实时结果:", flush=True)
+                    print(f"✅ [网络搜索/Search]: 成功获取 {len(simplified)} 条实时结果{timing_str}:", flush=True)
                     for i, item in enumerate(simplified, 1):
                         title = item.get("title", "无标题")
                         url = item.get("url", "")
@@ -200,13 +271,20 @@ async def search_web(params: FunctionCallParams, query: str):
                     await params.result_callback({"results": simplified})
                 else:
                     err_msg = await resp.text()
+                    print(f"⚠️ [网络搜索/Search]: 失败 (Status {resp.status}{timing_str}): {err_msg}", flush=True)
                     await params.result_callback({"error": f"HTTP {resp.status}: {err_msg}"})
     except Exception as e:
+        dur_ms = (time.time() - t_start) * 1000
+        timing_str = f" (耗时: {dur_ms:.0f}ms)" if SHOW_LATENCY else ""
+        print(f"⚠️ [网络搜索/Search]: 发生异常{timing_str}: {e}", flush=True)
         await params.result_callback({"error": f"Search failed: {str(e)}"})
 
 
 async def main():
-    logger.info("Initializing Local Voice Agent (Cartesia STT + OpenRouter Cerebras + Misuedi KB + Parallel Search + Cartesia TTS)...")
+    logger.info(
+        f"Initializing Local Voice Agent (STT + OpenRouter Cerebras + Misuedi KB + Parallel Search + TTS)"
+        f" [Latency Display: {'ON' if SHOW_LATENCY else 'OFF'}]..."
+    )
 
     # 1. Local Audio Transport (Microphone + Speakers)
     transport = LocalAudioTransport(
@@ -288,11 +366,26 @@ async def main():
         user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
     )
 
-    # 6. Separate Loggers for User and Bot
-    user_logger = UserTranscriptLogger()
+    # 6. Separate Loggers for User and Bot (with TTFT tracking)
     bot_logger = BotTranscriptLogger()
+    user_logger = UserTranscriptLogger(bot_logger=bot_logger)
 
-    # 7. Pipeline Assembly
+    # 7. Optional Latency Observer for breakdown
+    observers = []
+    if SHOW_LATENCY:
+        latency_observer = UserBotLatencyObserver()
+
+        @latency_observer.event_handler("on_latency_breakdown")
+        async def on_latency_breakdown(observer, breakdown):
+            bot_logger.set_latency_breakdown(breakdown)
+
+        @latency_observer.event_handler("on_latency_measured")
+        async def on_latency_measured(observer, latency_secs):
+            bot_logger.set_total_latency(latency_secs)
+
+        observers.append(latency_observer)
+
+    # 8. Pipeline Assembly
     pipeline = Pipeline(
         [
             transport.input(),      # Microphone audio in
@@ -309,6 +402,7 @@ async def main():
 
     worker = PipelineWorker(
         pipeline,
+        observers=observers,
         params=PipelineParams(
             enable_metrics=True,
             enable_usage_metrics=True,
