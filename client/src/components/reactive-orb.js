@@ -1,6 +1,6 @@
 /**
- * Audio-Reactive WebGL Orb Component (ReactBits / 21st.dev style)
- * Powered by OGL with custom raymarched fluid shaders & real-time audio modulation.
+ * Audio-Reactive WebGL Spherical Orb Component
+ * Renders a circular, luminous 3D gradient orb with fluid internal harmonics & audio reactivity.
  */
 
 import { Renderer, Program, Mesh, Triangle } from 'ogl';
@@ -26,9 +26,9 @@ const FRAG_SHADER = /* glsl */ `
   uniform vec3 uBaseColor1;
   uniform vec3 uBaseColor2;
   uniform vec3 uBaseColor3;
-  uniform float uState; // 0=idle, 1=listening, 2=thinking, 3=speaking
+  uniform float uState;
 
-  // Simplex 3D noise
+  // 3D Simplex noise
   vec4 permute(vec4 x){return mod(((x*34.0)+1.0)*x, 289.0);}
   vec4 taylorInvSqrt(vec4 r){return 1.79284291400159 - 0.85373472095314 * r;}
 
@@ -111,37 +111,43 @@ const FRAG_SHADER = /* glsl */ `
 
     float dist = length(st);
     
-    // Base radius modulated by audio energy
-    float radius = 0.55 + uAudioEnergy * 0.25;
+    // Smooth, circular sphere radius with audio expansion
+    float radius = 0.62 + uAudioEnergy * 0.18;
     
-    // Dynamic 3D noise deformation
-    vec3 p = vec3(st * (2.2 + uAudioFreq * 1.5), uTime * 0.45);
-    float noiseVal = snoise(p) * (0.18 + uAudioEnergy * 0.35);
+    // Internal 3D sphere surface coordinate
+    float sphereMask = smoothstep(radius, radius - 0.02, dist);
     
-    float sphere = dist - radius + noiseVal;
+    // 3D Sphere Surface Normal & Fresnel Rim Lighting
+    float z = (dist < radius) ? sqrt(max(0.0, radius * radius - dist * dist)) : 0.0;
+    vec3 normal = normalize(vec3(st.x, st.y, z));
+    float fresnel = pow(1.0 - clamp(normal.z, 0.0, 1.0), 2.5);
     
-    // Smooth boundary
-    float alpha = smoothstep(0.08, -0.08, sphere);
-    float rim = smoothstep(0.4, 0.0, abs(sphere)) * 0.85;
+    // Internal fluid noise texture
+    vec3 noiseCoord = vec3(st * (1.8 + uAudioFreq * 0.8), uTime * 0.35);
+    float noiseVal = snoise(noiseCoord);
     
-    // Multi-color harmonic gradient
-    float colorMix = sin(uTime * 0.5 + st.x * 2.0 + noiseVal * 3.0) * 0.5 + 0.5;
-    vec3 col = mix(uBaseColor1, uBaseColor2, colorMix);
-    col = mix(col, uBaseColor3, clamp(st.y + 0.5, 0.0, 1.0));
+    // Multi-stop harmonic gradient inside sphere
+    float mixFactor = clamp((st.y / radius) * 0.5 + 0.5 + noiseVal * 0.15, 0.0, 1.0);
+    vec3 coreColor = mix(uBaseColor1, uBaseColor2, mixFactor);
+    coreColor = mix(coreColor, uBaseColor3, clamp(st.x * 0.4 + 0.5, 0.0, 1.0));
     
-    // Specular lighting & rim glow
-    col += vec3(1.0) * rim * (0.8 + uAudioEnergy * 1.2);
-    
-    // Outer atmospheric glow
-    float glow = exp(-dist * (2.4 - uAudioEnergy * 0.8)) * (0.65 + uAudioEnergy * 0.6);
-    vec3 glowColor = mix(uBaseColor1, uBaseColor3, 0.5);
+    // Luminous rim highlight & specular crescent
+    vec3 rimColor = mix(vec3(1.0), uBaseColor2, 0.25);
+    vec3 sphereColor = mix(coreColor, rimColor, fresnel * 0.95);
+    sphereColor += vec3(1.0) * pow(fresnel, 4.0) * (0.8 + uAudioEnergy * 1.0);
+
+    // Outer atmospheric glow / corona around sphere
+    float outerDist = max(0.0, dist - radius);
+    float halo = exp(-outerDist * 8.0) * (0.65 + uAudioEnergy * 0.5);
+    vec3 haloColor = mix(uBaseColor1, uBaseColor2, 0.5);
 
     // Apply hue
-    col = hueShift(col, uHue);
-    glowColor = hueShift(glowColor, uHue);
+    sphereColor = hueShift(sphereColor, uHue);
+    haloColor = hueShift(haloColor, uHue);
 
-    vec3 finalColor = col * alpha + glowColor * glow * (1.0 - alpha * 0.5);
-    float finalAlpha = clamp(alpha + glow * 0.85, 0.0, 1.0);
+    // Final composition
+    vec3 finalColor = sphereColor * sphereMask + haloColor * halo * (1.0 - sphereMask);
+    float finalAlpha = clamp(sphereMask + halo * 0.85, 0.0, 1.0);
 
     gl_FragColor = vec4(finalColor, finalAlpha);
   }
@@ -151,7 +157,7 @@ export class ReactiveOrb {
   constructor(canvasId, options = {}) {
     this.canvas = document.getElementById(canvasId);
     this.options = {
-      hue: options.hue ?? 6.0, // default hue=6 as in reactbits sample
+      hue: options.hue ?? 6.0,
       hoverIntensity: options.hoverIntensity ?? 0,
       ...options,
     };
@@ -192,9 +198,9 @@ export class ReactiveOrb {
           uAudioEnergy: { value: 0 },
           uAudioFreq: { value: 0 },
           uState: { value: 0 },
-          uBaseColor1: { value: [0.38, 0.40, 0.95] }, // Indigo (#6366f1)
-          uBaseColor2: { value: [0.02, 0.71, 0.83] }, // Cyan (#06b6d4)
-          uBaseColor3: { value: [0.65, 0.33, 0.96] }, // Purple (#a855f7)
+          uBaseColor1: { value: [0.18, 0.12, 0.35] }, // Deep Violet (#2e1f59)
+          uBaseColor2: { value: [0.65, 0.33, 0.96] }, // Purple (#a855f7)
+          uBaseColor3: { value: [0.38, 0.40, 0.95] }, // Indigo (#6366f1)
         },
       });
 
@@ -202,7 +208,7 @@ export class ReactiveOrb {
       this.running = true;
       this.animate();
     } catch (e) {
-      console.warn('OGL WebGL initialization failed, fallback to 2D:', e);
+      console.warn('OGL WebGL initialization failed:', e);
     }
   }
 
@@ -213,24 +219,24 @@ export class ReactiveOrb {
     const u = this.program.uniforms;
     if (newState === 'listening') {
       u.uState.value = 1.0;
-      u.uBaseColor1.value = [0.02, 0.71, 0.83]; // Cyan
-      u.uBaseColor2.value = [0.06, 0.72, 0.50]; // Emerald
+      u.uBaseColor1.value = [0.08, 0.15, 0.35]; // Deep Blue
+      u.uBaseColor2.value = [0.02, 0.71, 0.83]; // Cyan
       u.uBaseColor3.value = [0.38, 0.40, 0.95]; // Indigo
     } else if (newState === 'thinking') {
       u.uState.value = 2.0;
-      u.uBaseColor1.value = [0.96, 0.62, 0.04]; // Amber
-      u.uBaseColor2.value = [0.92, 0.28, 0.60]; // Pink
-      u.uBaseColor3.value = [0.65, 0.33, 0.96]; // Purple
+      u.uBaseColor1.value = [0.35, 0.15, 0.05]; // Deep Amber
+      u.uBaseColor2.value = [0.96, 0.62, 0.04]; // Amber
+      u.uBaseColor3.value = [0.92, 0.28, 0.60]; // Pink
     } else if (newState === 'speaking') {
       u.uState.value = 3.0;
-      u.uBaseColor1.value = [0.54, 0.36, 0.96]; // Violet
-      u.uBaseColor2.value = [0.02, 0.71, 0.83]; // Cyan
-      u.uBaseColor3.value = [0.92, 0.28, 0.60]; // Pink
+      u.uBaseColor1.value = [0.22, 0.12, 0.45]; // Violet
+      u.uBaseColor2.value = [0.65, 0.33, 0.96]; // Purple
+      u.uBaseColor3.value = [0.02, 0.71, 0.83]; // Cyan
     } else {
       u.uState.value = 0.0;
-      u.uBaseColor1.value = [0.38, 0.40, 0.95]; // Indigo
-      u.uBaseColor2.value = [0.02, 0.71, 0.83]; // Cyan
-      u.uBaseColor3.value = [0.65, 0.33, 0.96]; // Purple
+      u.uBaseColor1.value = [0.18, 0.12, 0.35]; // Deep Violet
+      u.uBaseColor2.value = [0.65, 0.33, 0.96]; // Purple
+      u.uBaseColor3.value = [0.38, 0.40, 0.95]; // Indigo
     }
   }
 
@@ -247,7 +253,6 @@ export class ReactiveOrb {
     this.time += 0.025;
     this.smoothedEnergy += (this.audioEnergy - this.smoothedEnergy) * 0.25;
 
-    // Calculate mid-frequency band energy
     let freqSum = 0;
     for (let i = 4; i < 20; i++) {
       freqSum += this.freqData[i] || 0;
