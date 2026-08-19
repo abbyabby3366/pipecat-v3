@@ -2,6 +2,7 @@ import asyncio
 import os
 import sys
 
+import aiohttp
 from dotenv import load_dotenv
 from loguru import logger
 
@@ -13,6 +14,7 @@ from pipecat.frames.frames import (
     LLMRunFrame,
     TextFrame,
     TranscriptionFrame,
+    TTSSpeakFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
@@ -24,6 +26,7 @@ from pipecat.processors.aggregators.llm_response_universal import (
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.cartesia.stt import CartesiaSTTService
 from pipecat.services.cartesia.tts import CartesiaTTSService, GenerationConfig
+from pipecat.services.llm_service import FunctionCallParams
 from pipecat.services.openrouter.llm import OpenRouterLLMService
 from pipecat.transcriptions.language import Language
 from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
@@ -71,8 +74,58 @@ class BotTranscriptLogger(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
+async def search_web(params: FunctionCallParams, query: str):
+    """Search the live web using Parallel.ai for real-time information, latest news, weather, or current facts.
+
+    Only call this function when the user explicitly asks for up-to-date real-time information,
+    current news, weather forecasts, or external factual data that requires internet access.
+    Do NOT call this for normal greetings, casual conversation, self-introductions, or calculations.
+
+    Args:
+        query: The specific search query or keyword to look up online.
+    """
+    api_key = os.getenv("PARALLEL_API_KEY")
+    if not api_key:
+        await params.result_callback({"error": "PARALLEL_API_KEY is not set."})
+        return
+
+    url = "https://api.parallel.ai/v1/search"
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": api_key,
+    }
+    payload = {
+        "objective": query,
+        "search_queries": [query],
+    }
+
+    print(f"\n🌐 [网络搜索/Search]: 正在查询 '{query}' ...", flush=True)
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=6)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    results = data.get("results", [])
+                    simplified = []
+                    for r in results[:3]:
+                        excerpts = "\n".join(r.get("excerpts", [])[:2])
+                        simplified.append({
+                            "title": r.get("title", ""),
+                            "url": r.get("url", ""),
+                            "snippet": excerpts,
+                        })
+                    print(f"✅ [网络搜索/Search]: 成功获取 {len(simplified)} 条实时结果", flush=True)
+                    await params.result_callback({"results": simplified})
+                else:
+                    err_msg = await resp.text()
+                    await params.result_callback({"error": f"HTTP {resp.status}: {err_msg}"})
+    except Exception as e:
+        await params.result_callback({"error": f"Search failed: {str(e)}"})
+
+
 async def main():
-    logger.info("Initializing Local Voice Agent (Cartesia STT + OpenRouter Cerebras + Cartesia TTS)...")
+    logger.info("Initializing Local Voice Agent (Cartesia STT + OpenRouter Cerebras + Parallel Search + Cartesia TTS)...")
 
     # 1. Local Audio Transport (Microphone + Speakers)
     transport = LocalAudioTransport(
@@ -97,12 +150,13 @@ async def main():
         settings=OpenRouterLLMService.Settings(
             model="meta-llama/llama-3.3-70b-instruct:cerebras",
             system_instruction=(
-                "你是一个极速中文语音助手。你的回答将被直接转换成语音朗读给用户，"
-                "请保持简短、自然、口语化，像真人对话一样。"
-                "严禁使用 markdown 格式、列表、粗体或表情符号。"
+                "你是一个中文极速语音助手，具备实时联网搜索能力。"
+                "仅在用户明确询问实时新闻、天气、股价、最新事件等需要网络最新信息的问题时，调用 search_web 工具。"
+                "严禁在日常问候、自我介绍、闲聊、基础计算时调用搜索工具。"
+                "回答请保持简短、自然、口语化，严禁使用 markdown 格式或表情符号。"
             ),
             temperature=0.7,
-            max_tokens=150,
+            max_tokens=200,
         ),
         extra_body={
             "provider": {
@@ -130,8 +184,14 @@ async def main():
         ),
     )
 
-    # 5. Conversation Context & VAD (Silero)
-    context = LLMContext()
+    # Spoken notification when search tool is triggered
+    @llm.event_handler("on_function_calls_started")
+    async def on_function_calls_started(service, function_calls):
+        print("\n🔍 [系统/System]: 稍等，我正在网上搜索相关信息...", flush=True)
+        await tts.queue_frame(TTSSpeakFrame("稍等，我正在网上搜索相关信息..."))
+
+    # 5. Conversation Context with Web Search Tool & VAD (Silero)
+    context = LLMContext(tools=[search_web])
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
@@ -146,9 +206,9 @@ async def main():
         [
             transport.input(),      # Microphone audio in
             stt,                    # Cartesia Speech-to-Text
-            user_logger,            # Logs user speech right after STT!
+            user_logger,            # Logs user speech right after STT
             user_aggregator,        # User turn detection & context
-            llm,                    # OpenRouter (Cerebras) LLM
+            llm,                    # OpenRouter (Cerebras) LLM with tools
             bot_logger,             # Logs streaming bot responses
             tts,                    # Cartesia Text-to-Speech
             transport.output(),     # Speaker audio out
@@ -167,12 +227,9 @@ async def main():
     runner = WorkerRunner()
     await runner.add_workers(worker)
 
-    # Initial Greeting in Chinese
-    context.add_message({
-        "role": "user",
-        "content": "请用一句话热情简短地打个招呼，告诉我已经准备好了。"
-    })
-    await worker.queue_frames([LLMRunFrame()])
+    # Initial Greeting in Chinese (spoken directly via TTS without unnecessary search)
+    print("\n🤖 [助手/Bot]: 你好！我已经准备好了，支持实时联网搜索。请问今天有什么我可以帮你的？", flush=True)
+    await tts.queue_frame(TTSSpeakFrame("你好！我已经准备好了，支持实时联网搜索。请问今天有什么我可以帮你的？"))
 
     logger.info("Bot is listening! Speak into your microphone...")
     await runner.run()
