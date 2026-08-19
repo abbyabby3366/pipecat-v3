@@ -224,11 +224,6 @@ async function startCall() {
       currentUserText = '';
     });
 
-    client.on(RTVIEvent.BotStartedSpeaking, () => {
-      setAgentState('speaking', '正在回答...');
-      moveSphereDown();
-    });
-
     client.on(RTVIEvent.BotStoppedSpeaking, () => {
       setAgentState('idle', '请说话...');
       currentBotMsgElement = null;
@@ -270,11 +265,34 @@ async function startCall() {
     });
 
     // 5. Function Calling / Tools Notification
+    let activeToolBubble = null;
+
     client.on(RTVIEvent.LLMFunctionCall, (call) => {
       const fnName = call?.function_name || 'Tool';
       const isKB = fnName.includes('knowledge');
-      setAgentState('thinking', isKB ? '检索专属知识库...' : '实时联网搜索...');
+      const query = call?.args?.query || '';
+      const actionLabel = isKB ? '正在检索专属知识库' : '正在联网搜索';
+      const typeClass = isKB ? 'knowledge-base' : 'web-search';
+      const icon = isKB ? '📚' : '🌐';
 
+      setAgentState('thinking', isKB ? '检索专属知识库...' : '实时联网搜索...');
+      setOrbText(isKB ? '正在检索知识库...' : '正在网上搜索...');
+
+      // Append visual status card directly into active conversation stream
+      moveSphereDown();
+      const toolBubble = document.createElement('div');
+      toolBubble.className = `chat-bubble tool-status ${typeClass}`;
+      toolBubble.innerHTML = `
+        <div class="tool-status-spinner"></div>
+        <div class="tool-status-text">
+          <span>${icon} ${actionLabel}${query ? `: <span class="tool-status-query">"${query}"</span>` : '...'}</span>
+        </div>
+      `;
+      conversationMessages.appendChild(toolBubble);
+      scrollToBottom();
+      activeToolBubble = toolBubble;
+
+      // Add entry to telemetry drawer feed
       const card = document.createElement('div');
       card.className = 'tool-event-card';
       card.innerHTML = `
@@ -282,10 +300,22 @@ async function startCall() {
           <span>${isKB ? '📚 Misuedi ARK 知识库' : '🌐 Parallel 实时搜索'}</span>
         </div>
         <div style="font-size: 0.8rem; color: var(--text-muted);">
-          查询关键词: <em>${call?.args?.query || fnName}</em>
+          查询关键词: <em>${query || fnName}</em>
         </div>
       `;
       toolActivityFeed.appendChild(card);
+    });
+
+    client.on(RTVIEvent.BotStartedSpeaking, () => {
+      setAgentState('speaking', '正在回答...');
+      moveSphereDown();
+      if (activeToolBubble) {
+        const spinner = activeToolBubble.querySelector('.tool-status-spinner');
+        if (spinner) {
+          spinner.style.display = 'none';
+        }
+        activeToolBubble = null;
+      }
     });
 
     // 6. Metrics & Latency Telemetry
