@@ -115,7 +115,13 @@ async def search_web(params: FunctionCallParams, query: str):
                             "url": r.get("url", ""),
                             "snippet": excerpts,
                         })
-                    print(f"✅ [网络搜索/Search]: 成功获取 {len(simplified)} 条实时结果", flush=True)
+                    print(f"✅ [网络搜索/Search]: 成功获取 {len(simplified)} 条实时结果:", flush=True)
+                    for i, item in enumerate(simplified, 1):
+                        title = item.get("title", "无标题")
+                        url = item.get("url", "")
+                        snippet = item.get("snippet", "").strip().replace("\n", " ")
+                        snippet_preview = (snippet[:120] + "...") if len(snippet) > 120 else snippet
+                        print(f"   [{i}] 📌 {title}\n       🔗 {url}\n       📝 {snippet_preview}", flush=True)
                     await params.result_callback({"results": simplified})
                 else:
                     err_msg = await resp.text()
