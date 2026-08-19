@@ -535,6 +535,16 @@ class CartesiaTTSService(WebsocketTTSService):
         voice_config["mode"] = "id"
         voice_config["id"] = self._settings.voice
 
+        supports_timestamps = True
+        if self._settings.language:
+            lang_code = (
+                self._settings.language
+                if isinstance(self._settings.language, str)
+                else self._settings.language.value
+            )
+            if lang_code.split("-")[0].lower() in {"zh"}:
+                supports_timestamps = False
+
         msg = {
             "transcript": text,
             "continue": continue_transcript,
@@ -546,7 +556,7 @@ class CartesiaTTSService(WebsocketTTSService):
                 "encoding": self._output_encoding,
                 "sample_rate": self._output_sample_rate,
             },
-            "add_timestamps": add_timestamps,
+            "add_timestamps": add_timestamps and supports_timestamps,
             "use_normalized_timestamps": False,
         }
 
@@ -661,7 +671,7 @@ class CartesiaTTSService(WebsocketTTSService):
         msg = self._build_msg(text="", continue_transcript=False, context_id=flush_id)
         await self._websocket.send(msg)
 
-    async def _update_settings(self, delta: CartesiaTTSSettings) -> dict[str, Any]:
+    async def _update_settings(self, delta: TTSSettings) -> dict[str, Any]:
         """Apply a TTS settings delta, flushing the context if needed.
 
         Voice, model, and language are locked per Cartesia context. If any of
