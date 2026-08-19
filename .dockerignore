@@ -1,0 +1,35 @@
+# Git & documentation
+.git
+.github
+.agents
+.claude
+.claude-plugin
+docs
+changelog
+tests
+examples
+scripts
+*.md
+!README.md
+
+# Python
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.ruff_cache
+.pytest_cache
+.coverage
+htmlcov
+
+# Node & Frontend
+client/node_modules
+client/dist
+.npm
+
+# Secrets and local configurations
+.env
+*.local
+.DS_Store
+Thumbs.db
