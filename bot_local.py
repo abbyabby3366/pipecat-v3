@@ -6,7 +6,14 @@ from dotenv import load_dotenv
 from loguru import logger
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.frames.frames import LLMRunFrame
+from pipecat.frames.frames import (
+    Frame,
+    InterimTranscriptionFrame,
+    LLMFullResponseEndFrame,
+    LLMRunFrame,
+    TextFrame,
+    TranscriptionFrame,
+)
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
 from pipecat.processors.aggregators.llm_context import LLMContext
@@ -14,6 +21,7 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
     LLMUserAggregatorParams,
 )
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.cartesia.stt import CartesiaSTTService
 from pipecat.services.cartesia.tts import CartesiaTTSService, GenerationConfig
 from pipecat.services.openrouter.llm import OpenRouterLLMService
@@ -25,6 +33,42 @@ load_dotenv(override=True)
 
 logger.remove(0)
 logger.add(sys.stderr, level="INFO")
+
+
+class UserTranscriptLogger(FrameProcessor):
+    """Prints recognized user speech to the terminal."""
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+
+        if isinstance(frame, TranscriptionFrame):
+            if frame.text and frame.text.strip():
+                print(f"\n🗣️  [用户/User]: {frame.text.strip()}", flush=True)
+
+        await self.push_frame(frame, direction)
+
+
+class BotTranscriptLogger(FrameProcessor):
+    """Prints streaming bot speech tokens to the terminal."""
+
+    def __init__(self):
+        super().__init__()
+        self._in_bot_response = False
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+
+        if isinstance(frame, TextFrame) and not isinstance(frame, (TranscriptionFrame, InterimTranscriptionFrame)):
+            if not self._in_bot_response:
+                print("\n🤖 [助手/Bot]: ", end="", flush=True)
+                self._in_bot_response = True
+            print(frame.text, end="", flush=True)
+        elif isinstance(frame, LLMFullResponseEndFrame):
+            if self._in_bot_response:
+                print("", flush=True)
+                self._in_bot_response = False
+
+        await self.push_frame(frame, direction)
 
 
 async def main():
@@ -93,13 +137,19 @@ async def main():
         user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
     )
 
-    # 6. Pipeline Assembly
+    # 6. Separate Loggers for User and Bot
+    user_logger = UserTranscriptLogger()
+    bot_logger = BotTranscriptLogger()
+
+    # 7. Pipeline Assembly
     pipeline = Pipeline(
         [
             transport.input(),      # Microphone audio in
             stt,                    # Cartesia Speech-to-Text
+            user_logger,            # Logs user speech right after STT!
             user_aggregator,        # User turn detection & context
             llm,                    # OpenRouter (Cerebras) LLM
+            bot_logger,             # Logs streaming bot responses
             tts,                    # Cartesia Text-to-Speech
             transport.output(),     # Speaker audio out
             assistant_aggregator,   # Bot turn tracking
