@@ -74,11 +74,86 @@ class BotTranscriptLogger(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
-async def search_web(params: FunctionCallParams, query: str):
-    """Search the live web using Parallel.ai for real-time information, latest news, weather, or current facts.
+async def search_knowledge_base(params: FunctionCallParams, query: str):
+    """Search the internal Misuedi knowledge base for ARK whitepaper, protocol documentation, project background, or internal facts.
 
-    Only call this function when the user explicitly asks for up-to-date real-time information,
-    current news, weather forecasts, or external factual data that requires internet access.
+    Call this function whenever the user asks questions about ARK, blockchain protocols, project whitepaper details, or internal documentation.
+
+    Args:
+        query: The specific question or topic to retrieve from the knowledge base.
+    """
+    api_key = os.getenv("MISUEDI_API_KEY", "dataset-nV5sJbUz38MXg92S0VNL35i9")
+    base_url = os.getenv("MISUEDI_BASE_URL", "https://misuedi.com/v1")
+    host = os.getenv("MISUEDI_HOST", "dify.misuedi.com")
+    dataset_id = os.getenv("MISUEDI_DEFAULT_DATASET_ID", "08a9c3f9-4e3b-4cc3-8945-173b003abbf9")
+
+    url = f"{base_url}/datasets/{dataset_id}/retrieve"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Host": host,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": "pipecat-voice-agent/1.0",
+    }
+
+    print(f"\n📚 [知识库/KB]: 正在检索知识库 '{query}' ...", flush=True)
+
+    async def _do_retrieve(method: str):
+        payload = {
+            "query": query,
+            "retrieval_model": {
+                "search_method": method,
+                "reranking_enable": False,
+                "score_threshold_enabled": False,
+                "top_k": 3,
+            },
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=6)) as resp:
+                return resp.status, (await resp.json() if resp.status == 200 else await resp.text())
+
+    try:
+        status, data = await _do_retrieve("semantic_search")
+        if status != 200:
+            # Fallback to keyword_search if semantic search returned 400
+            status, data = await _do_retrieve("keyword_search")
+
+        if status == 200 and isinstance(data, dict):
+            records = data.get("records", [])
+            simplified = []
+            for r in records[:3]:
+                seg = r.get("segment", {})
+                doc = seg.get("document", {})
+                score = r.get("score", 0.0)
+                content = seg.get("content", "")
+                simplified.append({
+                    "score": round(score, 2),
+                    "document": doc.get("name", "Unknown Document"),
+                    "content": content,
+                })
+
+            print(f"✅ [知识库/KB]: 成功匹配到 {len(simplified)} 条知识库记录:", flush=True)
+            for i, item in enumerate(simplified, 1):
+                doc_name = item.get("document")
+                score = item.get("score")
+                content_preview = item.get("content", "").strip().replace("\n", " ")
+                preview = (content_preview[:120] + "...") if len(content_preview) > 120 else content_preview
+                print(f"   [{i}] 📄 {doc_name} (匹配度: {score})\n       📝 {preview}", flush=True)
+
+            await params.result_callback({"records": simplified})
+        else:
+            print(f"⚠️ [知识库/KB]: 检索失败 (Status {status}): {data}", flush=True)
+            await params.result_callback({"error": f"HTTP {status}: {data}"})
+    except Exception as e:
+        print(f"⚠️ [知识库/KB]: 发生异常: {e}", flush=True)
+        await params.result_callback({"error": f"KB search failed: {str(e)}"})
+
+
+async def search_web(params: FunctionCallParams, query: str):
+    """Search the live web using Parallel.ai for real-time information, latest news, weather forecasts, stock prices, or current external facts.
+
+    Only call this function when the user explicitly asks for up-to-date real-time external information,
+    current news, weather forecasts, or external factual data that requires live internet search.
     Do NOT call this for normal greetings, casual conversation, self-introductions, or calculations.
 
     Args:
@@ -131,7 +206,7 @@ async def search_web(params: FunctionCallParams, query: str):
 
 
 async def main():
-    logger.info("Initializing Local Voice Agent (Cartesia STT + OpenRouter Cerebras + Parallel Search + Cartesia TTS)...")
+    logger.info("Initializing Local Voice Agent (Cartesia STT + OpenRouter Cerebras + Misuedi KB + Parallel Search + Cartesia TTS)...")
 
     # 1. Local Audio Transport (Microphone + Speakers)
     transport = LocalAudioTransport(
@@ -156,10 +231,12 @@ async def main():
         settings=OpenRouterLLMService.Settings(
             model="meta-llama/llama-3.3-70b-instruct:cerebras",
             system_instruction=(
-                "你是一个中文极速语音助手，具备实时联网搜索能力。"
-                "仅在用户明确询问实时新闻、天气、股价、最新事件等需要网络最新信息的问题时，调用 search_web 工具。"
-                "严禁在日常问候、自我介绍、闲聊、基础计算时调用搜索工具。"
-                "回答请保持简短、自然、口语化，严禁使用 markdown 格式或表情符号。"
+                "你是一个全能极速中文语音助手，具备专属知识库检索与实时网络搜索能力。"
+                "规则指南："
+                "1. 当用户询问关于 ARK 项目、白皮书、机制设计或内部知识时，请调用 search_knowledge_base 工具检索官方知识库；"
+                "2. 当用户询问外部实时新闻、天气、行情、实时事件时，请调用 search_web 工具；"
+                "3. 严禁在日常问候、自我介绍、闲聊或基础计算时调用任何工具；"
+                "4. 你的回答将被直接转换为语音朗读，请保持简短、自然、口语化，严禁输出 markdown 格式、特殊排版或表情符号。"
             ),
             temperature=0.7,
             max_tokens=200,
@@ -190,14 +267,20 @@ async def main():
         ),
     )
 
-    # Spoken notification when search tool is triggered
+    # Spoken notification when search/KB tool is triggered
     @llm.event_handler("on_function_calls_started")
     async def on_function_calls_started(service, function_calls):
+        for call in function_calls:
+            fn_name = getattr(getattr(call, "function", None), "name", str(call))
+            if "knowledge" in fn_name:
+                print("\n🔍 [系统/System]: 稍等，我正在检索专属知识库...", flush=True)
+                await tts.queue_frame(TTSSpeakFrame("稍等，我正在查询专属知识库..."))
+                return
         print("\n🔍 [系统/System]: 稍等，我正在网上搜索相关信息...", flush=True)
         await tts.queue_frame(TTSSpeakFrame("稍等，我正在网上搜索相关信息..."))
 
-    # 5. Conversation Context with Web Search Tool & VAD (Silero)
-    context = LLMContext(tools=[search_web])
+    # 5. Conversation Context with both Misuedi Knowledge Base & Web Search Tools
+    context = LLMContext(tools=[search_knowledge_base, search_web])
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
@@ -233,9 +316,9 @@ async def main():
     runner = WorkerRunner()
     await runner.add_workers(worker)
 
-    # Initial Greeting in Chinese (spoken directly via TTS without unnecessary search)
-    print("\n🤖 [助手/Bot]: 你好！我已经准备好了，支持实时联网搜索。请问今天有什么我可以帮你的？", flush=True)
-    await tts.queue_frame(TTSSpeakFrame("你好！我已经准备好了，支持实时联网搜索。请问今天有什么我可以帮你的？"))
+    # Initial Greeting in Chinese
+    print("\n🤖 [助手/Bot]: 你好！我已经准备好了，支持专属知识库与实时联网搜索。请问今天有什么我可以帮你的？", flush=True)
+    await tts.queue_frame(TTSSpeakFrame("你好！我已经准备好了，支持专属知识库与实时联网搜索。请问今天有什么我可以帮你的？"))
 
     logger.info("Bot is listening! Speak into your microphone...")
     await runner.run()
