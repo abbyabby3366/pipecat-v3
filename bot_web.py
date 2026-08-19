@@ -13,6 +13,7 @@ from loguru import logger
 import uvicorn
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import (
     Frame,
     InterimTranscriptionFrame,
@@ -37,13 +38,19 @@ from pipecat.services.llm_service import FunctionCallParams
 from pipecat.services.openrouter.llm import OpenRouterLLMService
 from pipecat.transcriptions.language import Language
 from pipecat.transports.base_transport import TransportParams
-from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
+from pipecat.transports.smallwebrtc.connection import IceServer, SmallWebRTCConnection
 from pipecat.transports.smallwebrtc.request_handler import (
     SmallWebRTCPatchRequest,
     SmallWebRTCRequest,
     SmallWebRTCRequestHandler,
 )
 from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
+from pipecat.turns.user_start import (
+    TranscriptionUserTurnStartStrategy,
+    VADUserTurnStartStrategy,
+)
+from pipecat.turns.user_stop import SpeechTimeoutUserTurnStopStrategy
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.workers.runner import WorkerRunner
 
 load_dotenv(override=True)
@@ -354,9 +361,24 @@ async def run_bot(webrtc_connection: SmallWebRTCConnection):
 
     # 5. Conversation Context
     context = LLMContext(tools=[search_knowledge_base, search_web])
+    vad_analyzer = SileroVADAnalyzer(
+        params=VADParams(
+            confidence=0.4,
+            start_secs=0.15,
+            stop_secs=0.2,
+            min_volume=0.15,
+        )
+    )
+    user_turn_strategies = UserTurnStrategies(
+        start=[VADUserTurnStartStrategy(), TranscriptionUserTurnStartStrategy()],
+        stop=[SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=0.8, wait_for_transcript=True)],
+    )
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context,
-        user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
+        user_params=LLMUserAggregatorParams(
+            vad_analyzer=vad_analyzer,
+            user_turn_strategies=user_turn_strategies,
+        ),
     )
 
     transcript_logger = TranscriptLogger()
@@ -433,7 +455,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-small_webrtc_handler = SmallWebRTCRequestHandler()
+ice_servers = [
+    IceServer(urls="stun:stun.relay.metered.ca:80"),
+    IceServer(urls="stun:stun.l.google.com:19302"),
+    IceServer(urls="turn:global.relay.metered.ca:80", username="f423e6b5e2030e7326df0b0f", credential="iGwR69i6RfWNnstv"),
+    IceServer(urls="turn:global.relay.metered.ca:80?transport=tcp", username="f423e6b5e2030e7326df0b0f", credential="iGwR69i6RfWNnstv"),
+    IceServer(urls="turn:global.relay.metered.ca:443", username="f423e6b5e2030e7326df0b0f", credential="iGwR69i6RfWNnstv"),
+    IceServer(urls="turns:global.relay.metered.ca:443?transport=tcp", username="f423e6b5e2030e7326df0b0f", credential="iGwR69i6RfWNnstv"),
+]
+small_webrtc_handler = SmallWebRTCRequestHandler(ice_servers=ice_servers)
 
 
 @app.post("/api/offer")

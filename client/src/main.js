@@ -50,6 +50,27 @@ let isMuted = false;
 let hasSphereMovedDown = false;
 let currentBotMsgElement = null;
 let currentBotText = '';
+let wakeLock = null;
+
+async function requestWakeLock() {
+  try {
+    if ('wakeLock' in navigator) {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => {
+        wakeLock = null;
+      });
+    }
+  } catch (err) {
+    console.debug('Wake Lock request skipped:', err);
+  }
+}
+
+function releaseWakeLock() {
+  if (wakeLock) {
+    wakeLock.release().catch(() => {});
+    wakeLock = null;
+  }
+}
 
 // Initialize Visual Elements
 const aurora = new AuroraBackground('aurora-canvas');
@@ -147,7 +168,16 @@ async function startCall() {
 
   try {
     client = new PipecatClient({
-      transport: new SmallWebRTCTransport(),
+      transport: new SmallWebRTCTransport({
+        iceServers: [
+          { urls: 'stun:stun.relay.metered.ca:80' },
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'turn:global.relay.metered.ca:80', username: 'f423e6b5e2030e7326df0b0f', credential: 'iGwR69i6RfWNnstv' },
+          { urls: 'turn:global.relay.metered.ca:80?transport=tcp', username: 'f423e6b5e2030e7326df0b0f', credential: 'iGwR69i6RfWNnstv' },
+          { urls: 'turn:global.relay.metered.ca:443', username: 'f423e6b5e2030e7326df0b0f', credential: 'iGwR69i6RfWNnstv' },
+          { urls: 'turns:global.relay.metered.ca:443?transport=tcp', username: 'f423e6b5e2030e7326df0b0f', credential: 'iGwR69i6RfWNnstv' },
+        ],
+      }),
       enableMic: true,
       enableCam: false,
     });
@@ -162,6 +192,7 @@ async function startCall() {
       startCallContainer.classList.add('hidden');
       connectedControlsContainer.classList.remove('hidden');
       isConnected = true;
+      requestWakeLock();
     });
 
     client.on(RTVIEvent.Disconnected, () => {
@@ -177,15 +208,22 @@ async function startCall() {
     });
 
     // 3. Speaking Turn Events
+    let currentUserMsgElement = null;
+    let currentUserText = '';
+
     client.on(RTVIEvent.UserStartedSpeaking, () => {
       setAgentState('listening', '正在聆听...');
       currentBotMsgElement = null;
       currentBotText = '';
+      currentUserMsgElement = null;
+      currentUserText = '';
       moveSphereDown();
     });
 
     client.on(RTVIEvent.UserStoppedSpeaking, () => {
       setAgentState('thinking', '正在思考...');
+      currentUserMsgElement = null;
+      currentUserText = '';
     });
 
     client.on(RTVIEvent.BotStartedSpeaking, () => {
@@ -201,8 +239,21 @@ async function startCall() {
 
     // 4. Real-time Transcripts (Chat Bubbles in Scrollable Stream)
     client.on(RTVIEvent.UserTranscript, (data) => {
-      if (data?.text && data.final) {
-        appendChatMessage('user', data.text.trim());
+      if (data?.text) {
+        moveSphereDown();
+        const text = data.text.trim();
+        if (!text) return;
+
+        if (data.final) {
+          if (!currentUserMsgElement) {
+            currentUserText = text;
+            currentUserMsgElement = appendChatMessage('user', currentUserText);
+          } else {
+            currentUserText = currentUserText ? `${currentUserText} ${text}` : text;
+            currentUserMsgElement.textContent = currentUserText;
+            scrollToBottom();
+          }
+        }
       }
     });
 
@@ -269,6 +320,7 @@ async function endCall() {
 }
 
 function handleDisconnect() {
+  releaseWakeLock();
   isConnected = false;
   hasSphereMovedDown = false;
   appLayout.classList.remove('sphere-down');
