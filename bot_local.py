@@ -303,11 +303,12 @@ async def main():
         ),
     )
 
-    # 3. OpenRouter LLM (Cerebras Ultra-Fast Llama 3.3 70B)
+    # 3. OpenRouter LLM (Cerebras Ultra-Fast GPT-OSS 120B / Llama)
+    model_name = os.getenv("OPENROUTER_MODEL", "openai/gpt-oss-120b")
     llm = OpenRouterLLMService(
         api_key=os.environ["OPENROUTER_API_KEY"],
         settings=OpenRouterLLMService.Settings(
-            model="meta-llama/llama-3.3-70b-instruct:cerebras",
+            model=model_name,
             system_instruction=(
                 "你是一个极速中文语音助手。"
                 "【基本要求】：直接且自然地回答用户，保持口语化、简短，严禁输出 markdown 格式、列表、特殊符号或表情符号。"
