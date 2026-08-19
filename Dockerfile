@@ -41,14 +41,14 @@ ENV PYTHONUNBUFFERED=1 \
 COPY pyproject.toml uv.lock README.md LICENSE ./
 
 # Pre-install dependencies without the local project root
-RUN uv sync --frozen --no-dev --all-extras --no-extra gstreamer --no-extra local --no-install-project
+RUN uv sync --frozen --no-dev --extra daily --extra runner --extra soundfile --no-install-project
 
 # Copy Pipecat source and bot script
 COPY src/ ./src/
 COPY bot_web.py ./
 
 # Install the project itself into the environment
-RUN uv sync --frozen --no-dev --all-extras --no-extra gstreamer --no-extra local
+RUN uv sync --frozen --no-dev --extra daily --extra runner --extra soundfile
 
 # Copy prebuilt frontend static files from Stage 1
 COPY --from=frontend-builder /app/client/dist ./client/dist

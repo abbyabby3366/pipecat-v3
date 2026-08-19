@@ -4,7 +4,7 @@
  */
 
 import { PipecatClient, RTVIEvent } from '@pipecat-ai/client-js';
-import { SmallWebRTCTransport } from '@pipecat-ai/small-webrtc-transport';
+import { DailyTransport } from '@pipecat-ai/daily-transport';
 import { createIcons, Activity, Info, Phone, PhoneOff, Mic, MicOff, Volume2, X, Terminal } from 'lucide';
 
 import { AuroraBackground } from './components/aurora-background.js';
@@ -167,17 +167,15 @@ async function startCall() {
   setOrbText('连接中...');
 
   try {
+    const resp = await fetch(`${window.location.origin}/api/connect`, { method: 'POST' });
+    if (!resp.ok) {
+      const errData = await resp.json().catch(() => ({}));
+      throw new Error(errData.detail || `Server error: ${resp.status}`);
+    }
+    const { room_url, token } = await resp.json();
+
     client = new PipecatClient({
-      transport: new SmallWebRTCTransport({
-        iceServers: [
-          { urls: 'stun:stun.relay.metered.ca:80' },
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'turn:global.relay.metered.ca:80', username: 'f423e6b5e2030e7326df0b0f', credential: 'iGwR69i6RfWNnstv' },
-          { urls: 'turn:global.relay.metered.ca:80?transport=tcp', username: 'f423e6b5e2030e7326df0b0f', credential: 'iGwR69i6RfWNnstv' },
-          { urls: 'turn:global.relay.metered.ca:443', username: 'f423e6b5e2030e7326df0b0f', credential: 'iGwR69i6RfWNnstv' },
-          { urls: 'turns:global.relay.metered.ca:443?transport=tcp', username: 'f423e6b5e2030e7326df0b0f', credential: 'iGwR69i6RfWNnstv' },
-        ],
-      }),
+      transport: new DailyTransport(),
       enableMic: true,
       enableCam: false,
     });
@@ -298,9 +296,11 @@ async function startCall() {
       }
     });
 
-    // Initiate WebRTC connection to backend offer endpoint
-    const webrtcUrl = `${window.location.origin}/api/offer`;
-    await client.connect({ webrtcUrl });
+    // Connect to Daily room using credentials
+    await client.connect({
+      url: room_url,
+      token: token,
+    });
 
   } catch (err) {
     console.error('Connection failed:', err);

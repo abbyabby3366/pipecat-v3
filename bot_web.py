@@ -1,16 +1,18 @@
+"""Daily.co WebRTC conversational voice assistant powered by Pipecat."""
+
 import asyncio
 import os
 import sys
 import time
-import uuid
+from contextlib import asynccontextmanager
 
 import aiohttp
+import uvicorn
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
-import uvicorn
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
@@ -18,7 +20,6 @@ from pipecat.frames.frames import (
     Frame,
     InterimTranscriptionFrame,
     LLMFullResponseEndFrame,
-    LLMRunFrame,
     TextFrame,
     TranscriptionFrame,
     TTSSpeakFrame,
@@ -37,14 +38,12 @@ from pipecat.services.cartesia.tts import CartesiaTTSService, GenerationConfig
 from pipecat.services.llm_service import FunctionCallParams
 from pipecat.services.openrouter.llm import OpenRouterLLMService
 from pipecat.transcriptions.language import Language
-from pipecat.transports.base_transport import TransportParams
-from pipecat.transports.smallwebrtc.connection import IceServer, SmallWebRTCConnection
-from pipecat.transports.smallwebrtc.request_handler import (
-    SmallWebRTCPatchRequest,
-    SmallWebRTCRequest,
-    SmallWebRTCRequestHandler,
+from pipecat.transports.daily.transport import DailyParams, DailyTransport
+from pipecat.transports.daily.utils import (
+    DailyRESTHelper,
+    DailyRoomParams,
+    DailyRoomProperties,
 )
-from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
 from pipecat.turns.user_start import (
     TranscriptionUserTurnStartStrategy,
     VADUserTurnStartStrategy,
@@ -60,11 +59,14 @@ logger.add(sys.stderr, level="INFO")
 
 SHOW_LATENCY = os.getenv("SHOW_LATENCY_METRICS", "false").strip().lower() in ("true", "1", "yes")
 
+_background_tasks = set()
+
 
 class TranscriptLogger(FrameProcessor):
     """Logs user & bot speech to console and handles latency breakdown display."""
 
     def __init__(self):
+        """Initialize the transcript logger."""
         super().__init__()
         self._in_bot_response = False
         self._user_speech_time = None
@@ -72,19 +74,23 @@ class TranscriptLogger(FrameProcessor):
         self._pending_total_latency = None
 
     def mark_user_speech(self):
+        """Record the timestamp when user speech was detected."""
         self._user_speech_time = time.time()
 
     def set_latency_breakdown(self, breakdown):
+        """Buffer latency breakdown metrics for display."""
         self._pending_breakdown = breakdown
         if not self._in_bot_response and (self._pending_breakdown or self._pending_total_latency):
             self.print_latency_report()
 
     def set_total_latency(self, total_secs):
+        """Buffer total end-to-end latency for display."""
         self._pending_total_latency = total_secs
         if not self._in_bot_response and (self._pending_breakdown or self._pending_total_latency):
             self.print_latency_report()
 
     def print_latency_report(self):
+        """Output structured latency telemetry to console."""
         if not SHOW_LATENCY:
             return
         if self._pending_breakdown is not None:
@@ -111,6 +117,7 @@ class TranscriptLogger(FrameProcessor):
             self._pending_total_latency = None
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
+        """Process stream frames for real-time transcription logging."""
         await super().process_frame(frame, direction)
 
         if isinstance(frame, TranscriptionFrame):
@@ -143,6 +150,7 @@ async def search_knowledge_base(params: FunctionCallParams, query: str):
     DO NOT invoke for general questions, ordinary blockchain concepts, greetings, calculations, or common knowledge.
 
     Args:
+        params: Function call context parameters.
         query: The specific ARK-related query or topic to look up.
     """
     api_key = os.getenv("MISUEDI_API_KEY", "dataset-nV5sJbUz38MXg92S0VNL35i9")
@@ -224,6 +232,7 @@ async def search_web(params: FunctionCallParams, query: str):
     DO NOT invoke for casual conversation, historical facts, explanations, coding, math, greetings, or general knowledge.
 
     Args:
+        params: Function call context parameters.
         query: The concise real-time search query.
     """
     api_key = os.getenv("PARALLEL_API_KEY")
@@ -280,16 +289,20 @@ async def search_web(params: FunctionCallParams, query: str):
         await params.result_callback({"error": f"Search failed: {str(e)}"})
 
 
-async def run_bot(webrtc_connection: SmallWebRTCConnection):
-    """Spawn and execute a Pipecat worker session for an incoming WebRTC client."""
-    logger.info("Initializing WebRTC Voice Agent session...")
+async def run_bot(room_url: str, token: str):
+    """Spawn and execute a Pipecat Daily WebRTC worker session for a room."""
+    logger.info(f"Initializing Daily Voice Agent session for room: {room_url}")
 
-    # 1. SmallWebRTC Transport
-    transport = SmallWebRTCTransport(
-        webrtc_connection=webrtc_connection,
-        params=TransportParams(
+    # 1. Daily Transport
+    transport = DailyTransport(
+        room_url=room_url,
+        token=token,
+        bot_name="AI Voice Assistant",
+        params=DailyParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
+            camera_in_enabled=False,
+            camera_out_enabled=False,
         ),
     )
 
@@ -424,16 +437,16 @@ async def run_bot(webrtc_connection: SmallWebRTCConnection):
     runner = WorkerRunner()
     await runner.add_workers(worker)
 
-    @transport.event_handler("on_client_connected")
-    async def on_client_connected(transport, client):
-        logger.info("Web client connected via WebRTC!")
+    @transport.event_handler("on_first_participant_joined")
+    async def on_first_participant_joined(transport, participant):
+        logger.info(f"First participant joined: {participant.get('id', 'user')}")
         greeting_text = "你好！我已经准备好了，支持专属知识库与实时联网搜索。请问今天有什么我可以帮你的？"
         print(f"\n🤖 [助手/Bot]: {greeting_text}", flush=True)
         await tts.queue_frame(TTSSpeakFrame(greeting_text))
 
-    @transport.event_handler("on_client_disconnected")
-    async def on_client_disconnected(transport, client):
-        logger.info("Web client disconnected")
+    @transport.event_handler("on_participant_left")
+    async def on_participant_left(transport, participant, reason):
+        logger.info(f"Participant left ({reason}), stopping session")
         await runner.cancel()
 
     try:
@@ -444,8 +457,21 @@ async def run_bot(webrtc_connection: SmallWebRTCConnection):
         logger.error(f"Worker session error: {e}")
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifecycle resources."""
+    async with aiohttp.ClientSession() as session:
+        app.state.aiohttp_session = session
+        daily_key = os.getenv("DAILY_API_KEY", "").strip()
+        app.state.daily_rest_helper = DailyRESTHelper(
+            daily_api_key=daily_key,
+            aiohttp_session=session,
+        )
+        yield
+
+
 # FastAPI Application
-app = FastAPI(title="Pipecat Speech-to-Speech Web Agent")
+app = FastAPI(title="Pipecat Speech-to-Speech Web Agent (Daily.co)", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -455,40 +481,54 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-ice_servers = [
-    IceServer(urls="stun:stun.relay.metered.ca:80"),
-    IceServer(urls="stun:stun.l.google.com:19302"),
-    IceServer(urls="turn:global.relay.metered.ca:80", username="f423e6b5e2030e7326df0b0f", credential="iGwR69i6RfWNnstv"),
-    IceServer(urls="turn:global.relay.metered.ca:80?transport=tcp", username="f423e6b5e2030e7326df0b0f", credential="iGwR69i6RfWNnstv"),
-    IceServer(urls="turn:global.relay.metered.ca:443", username="f423e6b5e2030e7326df0b0f", credential="iGwR69i6RfWNnstv"),
-    IceServer(urls="turns:global.relay.metered.ca:443?transport=tcp", username="f423e6b5e2030e7326df0b0f", credential="iGwR69i6RfWNnstv"),
-]
-small_webrtc_handler = SmallWebRTCRequestHandler(ice_servers=ice_servers)
 
+@app.post("/api/connect")
+async def connect():
+    """Create a temporary Daily room, generate tokens, spawn bot worker, and return credentials."""
+    daily_key = os.getenv("DAILY_API_KEY", "").strip()
+    if not daily_key or daily_key == "...":
+        raise HTTPException(
+            status_code=500,
+            detail="DAILY_API_KEY is not configured in .env",
+        )
 
-@app.post("/api/offer")
-async def offer(request: SmallWebRTCRequest, background_tasks: BackgroundTasks):
-    """Handle WebRTC offer from browser client."""
-    async def webrtc_connection_callback(connection: SmallWebRTCConnection):
-        background_tasks.add_task(run_bot, connection)
+    helper: DailyRESTHelper = app.state.daily_rest_helper
 
-    answer = await small_webrtc_handler.handle_web_request(
-        request=request,
-        webrtc_connection_callback=webrtc_connection_callback,
-    )
-    return answer
+    try:
+        # Create ephemeral room expiring in 30 minutes
+        expiry_seconds = 1800
+        room = await helper.create_room(
+            DailyRoomParams(
+                properties=DailyRoomProperties(
+                    exp=time.time() + expiry_seconds,
+                    eject_at_room_exp=True,
+                    start_video_off=True,
+                    start_audio_off=False,
+                )
+            )
+        )
 
+        bot_token = await helper.get_token(room.url, expiry_time=expiry_seconds, owner=True)
+        client_token = await helper.get_token(room.url, expiry_time=expiry_seconds, owner=False)
 
-@app.patch("/api/offer")
-async def ice_candidate(request: SmallWebRTCPatchRequest):
-    """Handle WebRTC ICE candidate patches."""
-    await small_webrtc_handler.handle_patch_request(request)
-    return {"status": "success"}
+        # Launch bot worker in background
+        task = asyncio.create_task(run_bot(room.url, bot_token))
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
+
+        return {
+            "room_url": room.url,
+            "token": client_token,
+        }
+    except Exception as e:
+        logger.error(f"Failed to create Daily room/token: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to initialize Daily session: {str(e)}")
 
 
 @app.get("/api/health")
 async def health():
-    return {"status": "healthy", "service": "pipecat-web-agent"}
+    """Service health check endpoint."""
+    return {"status": "healthy", "service": "pipecat-web-agent", "transport": "daily"}
 
 
 # Mount static client build if present
@@ -498,8 +538,9 @@ if os.path.exists(client_dist):
 
 
 def main():
+    """Run the FastAPI web server."""
     port = int(os.getenv("PORT", "7860"))
-    logger.info(f"Starting Pipecat Web Agent on http://localhost:{port}")
+    logger.info(f"Starting Pipecat Daily Web Agent on http://0.0.0.0:{port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
 
 
