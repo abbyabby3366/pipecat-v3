@@ -75,12 +75,13 @@ class BotTranscriptLogger(FrameProcessor):
 
 
 async def search_knowledge_base(params: FunctionCallParams, query: str):
-    """Search the internal Misuedi knowledge base for ARK whitepaper, protocol documentation, project background, or internal facts.
+    """Search the internal Misuedi knowledge base for specific questions about the ARK project, ARK whitepaper, or ARK governance.
 
-    Call this function whenever the user asks questions about ARK, blockchain protocols, project whitepaper details, or internal documentation.
+    CRITICAL: ONLY invoke this tool if the user's query explicitly mentions ARK, ARK whitepaper, ARK tokenomics, or ARK protocol architecture.
+    DO NOT invoke for general questions, ordinary blockchain concepts, greetings, calculations, or common knowledge.
 
     Args:
-        query: The specific question or topic to retrieve from the knowledge base.
+        query: The specific ARK-related query or topic to look up.
     """
     api_key = os.getenv("MISUEDI_API_KEY", "dataset-nV5sJbUz38MXg92S0VNL35i9")
     base_url = os.getenv("MISUEDI_BASE_URL", "https://misuedi.com/v1")
@@ -150,14 +151,13 @@ async def search_knowledge_base(params: FunctionCallParams, query: str):
 
 
 async def search_web(params: FunctionCallParams, query: str):
-    """Search the live web using Parallel.ai for real-time information, latest news, weather forecasts, stock prices, or current external facts.
+    """Search the live web using Parallel.ai ONLY for dynamic real-time information (e.g. today's live stock prices, current weather forecast, breaking news today).
 
-    Only call this function when the user explicitly asks for up-to-date real-time external information,
-    current news, weather forecasts, or external factual data that requires live internet search.
-    Do NOT call this for normal greetings, casual conversation, self-introductions, or calculations.
+    CRITICAL: ONLY invoke this tool if the user explicitly asks to search the web or asks for volatile real-time data that requires live internet (such as today's live weather, today's stock price, or today's breaking news).
+    DO NOT invoke for casual conversation, historical facts, explanations, coding, math, greetings, or general knowledge.
 
     Args:
-        query: The specific search query or keyword to look up online.
+        query: The concise real-time search query.
     """
     api_key = os.getenv("PARALLEL_API_KEY")
     if not api_key:
@@ -231,14 +231,16 @@ async def main():
         settings=OpenRouterLLMService.Settings(
             model="meta-llama/llama-3.3-70b-instruct:cerebras",
             system_instruction=(
-                "你是一个全能极速中文语音助手，具备专属知识库检索与实时网络搜索能力。"
-                "规则指南："
-                "1. 当用户询问关于 ARK 项目、白皮书、机制设计或内部知识时，请调用 search_knowledge_base 工具检索官方知识库；"
-                "2. 当用户询问外部实时新闻、天气、行情、实时事件时，请调用 search_web 工具；"
-                "3. 严禁在日常问候、自我介绍、闲聊或基础计算时调用任何工具；"
-                "4. 你的回答将被直接转换为语音朗读，请保持简短、自然、口语化，严禁输出 markdown 格式、特殊排版或表情符号。"
+                "你是一个极速中文语音助手。"
+                "【基本要求】：直接且自然地回答用户，保持口语化、简短，严禁输出 markdown 格式、列表、特殊符号或表情符号。"
+                "\n【工具调用严格守则】：\n"
+                "1. 默认直接根据自身知识回答，绝不滥用搜索工具；\n"
+                "2. 严禁在问候、打招呼、闲聊、自我介绍、常识、概念解释、数学计算或一般问答时调用任何工具；\n"
+                "3. 仅当用户明确询问【ARK 项目】、【ARK 白皮书】、【ARK 治理/代币】时，才调用 search_knowledge_base；\n"
+                "4. 仅当用户明确询问【实时最新新闻】、【今日实时行情/天气/股价】或明确要求【帮我上网查一下】时，才调用 search_web；\n"
+                "5. 若不满足上述严格条件，一律直接回答。"
             ),
-            temperature=0.7,
+            temperature=0.6,
             max_tokens=200,
         ),
         extra_body={
