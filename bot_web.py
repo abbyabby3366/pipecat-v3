@@ -248,6 +248,7 @@ async def search_web(params: FunctionCallParams, query: str):
     payload = {
         "objective": query,
         "search_queries": [query],
+        "mode": "turbo",
     }
 
     print(f"\n🌐 [网络搜索/Search]: 正在查询 '{query}' ...", flush=True)
