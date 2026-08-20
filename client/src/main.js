@@ -201,8 +201,17 @@ async function startCall() {
     client.on(RTVIEvent.TrackStarted, (track, participant) => {
       if (track.kind === 'audio' && !participant?.local) {
         botAudio.srcObject = new MediaStream([track]);
+        botAudio.play().catch((err) => console.warn('botAudio play error:', err));
         visualizer.attachStream(botAudio.srcObject, 'speaker');
       }
+    });
+
+    client.on(RTVIEvent.Error, (err) => {
+      console.error('RTVI Error:', err);
+    });
+
+    client.on(RTVIEvent.DeviceError, (err) => {
+      console.error('RTVI Device Error:', err);
     });
 
     // 3. Speaking Turn Events

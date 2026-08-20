@@ -446,12 +446,38 @@ async def run_bot(room_url: str, token: str):
     runner = WorkerRunner()
     await runner.add_workers(worker)
 
-    @transport.event_handler("on_first_participant_joined")
-    async def on_first_participant_joined(transport, participant):
-        logger.info(f"First participant joined: {participant.get('id', 'user')}")
+    first_participant_handled = False
+
+    async def handle_first_participant(participant: dict):
+        nonlocal first_participant_handled
+        if first_participant_handled:
+            return
+        first_participant_handled = True
+
+        p_id = participant.get("id") or participant.get("info", {}).get("userId", "user")
+        logger.info(f"Setting up audio session for participant: {p_id}")
+        if p_id and p_id != "local":
+            try:
+                await transport.capture_participant_audio(p_id, "microphone")
+            except Exception as e:
+                logger.warning(f"Could not capture participant audio: {e}")
+
         greeting_text = "你好！我已经准备好了，支持专属知识库与实时联网搜索。请问今天有什么我可以帮你的？"
         print(f"\n🤖 [助手/Bot]: {greeting_text}", flush=True)
         await tts.queue_frame(TTSSpeakFrame(greeting_text))
+
+    @transport.event_handler("on_first_participant_joined")
+    async def on_first_participant_joined(transport, participant):
+        await handle_first_participant(participant)
+
+    @transport.event_handler("on_joined")
+    async def on_joined(transport, data):
+        # In case the web client joined the room before the bot worker joined
+        participants = transport.participants()
+        for p_id, p_info in participants.items():
+            if p_id != "local" and not p_info.get("info", {}).get("isLocal", False):
+                await handle_first_participant({"id": p_id, **p_info})
+                break
 
     @transport.event_handler("on_participant_left")
     async def on_participant_left(transport, participant, reason):
