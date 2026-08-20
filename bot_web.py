@@ -32,11 +32,11 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
     LLMUserAggregatorParams,
 )
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.processors.frameworks.rtvi import (
     RTVIFunctionCallReportLevel,
     RTVIObserverParams,
 )
-from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.cartesia.stt import CartesiaSTTService
 from pipecat.services.cartesia.tts import CartesiaTTSService, GenerationConfig
 from pipecat.services.llm_service import FunctionCallParams
@@ -64,6 +64,21 @@ logger.add(sys.stderr, level="INFO")
 SHOW_LATENCY = os.getenv("SHOW_LATENCY_METRICS", "false").strip().lower() in ("true", "1", "yes")
 
 _background_tasks = set()
+
+
+class FilteredCartesiaSTTService(CartesiaSTTService):
+    """Cartesia STT service with built-in hallucination filtering for Chinese."""
+
+    HALLUCINATION_TOKENS = {"你", "您", "呃", "啊", "哦"}
+    PUNCTUATION_CHARS = " \t\r\n.,!?。，、！？"
+
+    async def _on_transcript(self, data):
+        """Filter out standalone ghost tokens before pushing transcription frames."""
+        text = data.get("text", "")
+        cleaned = text.strip(self.PUNCTUATION_CHARS)
+        if not cleaned or cleaned in self.HALLUCINATION_TOKENS:
+            return
+        await super()._on_transcript(data)
 
 
 class TranscriptLogger(FrameProcessor):
@@ -101,23 +116,37 @@ class TranscriptLogger(FrameProcessor):
             bd = self._pending_breakdown
             print("\n⏱️  [延迟分析 / Latency Breakdown]:", flush=True)
             if bd.user_turn_secs is not None:
-                print(f"   • 🎙️ VAD静音检测 & STT语音识别结算: {bd.user_turn_secs * 1000:.0f} ms", flush=True)
+                print(
+                    f"   • 🎙️ VAD静音检测 & STT语音识别结算: {bd.user_turn_secs * 1000:.0f} ms",
+                    flush=True,
+                )
             for t in bd.ttfb:
                 proc_label = (
-                    t.processor
-                    .replace("OpenRouterLLMService#0", "🧠 LLM (Cerebras)")
+                    t.processor.replace("OpenRouterLLMService#0", "🧠 LLM (Cerebras)")
                     .replace("CartesiaTTSService#0", "🔊 TTS (Cartesia)")
                     .replace("CartesiaSTTService#0", "🎙️ STT (Cartesia)")
                 )
-                print(f"   • ⚡ {proc_label} 首字/首包 (TTFB/TTFT): {t.duration_secs * 1000:.0f} ms", flush=True)
+                print(
+                    f"   • ⚡ {proc_label} 首字/首包 (TTFB/TTFT): {t.duration_secs * 1000:.0f} ms",
+                    flush=True,
+                )
             for fc in bd.function_calls:
-                print(f"   • 🛠️ 工具调用 [{fc.function_name}]: {fc.duration_secs * 1000:.0f} ms", flush=True)
+                print(
+                    f"   • 🛠️ 工具调用 [{fc.function_name}]: {fc.duration_secs * 1000:.0f} ms",
+                    flush=True,
+                )
             if bd.text_aggregation:
-                print(f"   • 📝 文本切分与聚合耗时: {bd.text_aggregation.duration_secs * 1000:.0f} ms", flush=True)
+                print(
+                    f"   • 📝 文本切分与聚合耗时: {bd.text_aggregation.duration_secs * 1000:.0f} ms",
+                    flush=True,
+                )
             self._pending_breakdown = None
 
         if self._pending_total_latency is not None:
-            print(f"   🚀 端到端语音响应总延迟: {self._pending_total_latency * 1000:.0f} ms\n", flush=True)
+            print(
+                f"   🚀 端到端语音响应总延迟: {self._pending_total_latency * 1000:.0f} ms\n",
+                flush=True,
+            )
             self._pending_total_latency = None
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
@@ -128,7 +157,9 @@ class TranscriptLogger(FrameProcessor):
             if frame.text and frame.text.strip():
                 self.mark_user_speech()
                 print(f"\n🗣️  [用户/User]: {frame.text.strip()}", flush=True)
-        elif isinstance(frame, TextFrame) and not isinstance(frame, (TranscriptionFrame, InterimTranscriptionFrame)):
+        elif isinstance(frame, TextFrame) and not isinstance(
+            frame, (TranscriptionFrame, InterimTranscriptionFrame)
+        ):
             if not self._in_bot_response:
                 ttft_info = ""
                 if SHOW_LATENCY and self._user_speech_time:
@@ -185,7 +216,9 @@ async def search_knowledge_base(params: FunctionCallParams, query: str):
             },
         }
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=6)) as resp:
+            async with session.post(
+                url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=6)
+            ) as resp:
                 return resp.status, (await resp.json() if resp.status == 200 else await resp.text())
 
     try:
@@ -204,18 +237,27 @@ async def search_knowledge_base(params: FunctionCallParams, query: str):
                 doc = seg.get("document", {})
                 score = r.get("score", 0.0)
                 content = seg.get("content", "")
-                simplified.append({
-                    "score": round(score, 2),
-                    "document": doc.get("name", "Unknown Document"),
-                    "content": content,
-                })
+                simplified.append(
+                    {
+                        "score": round(score, 2),
+                        "document": doc.get("name", "Unknown Document"),
+                        "content": content,
+                    }
+                )
 
-            print(f"✅ [知识库/KB]: 成功匹配到 {len(simplified)} 条知识库记录{timing_str}:", flush=True)
+            print(
+                f"✅ [知识库/KB]: 成功匹配到 {len(simplified)} 条知识库记录{timing_str}:",
+                flush=True,
+            )
             for i, item in enumerate(simplified, 1):
                 doc_name = item.get("document")
                 score = item.get("score")
                 content_preview = item.get("content", "").strip().replace("\n", " ")
-                preview = (content_preview[:120] + "...") if len(content_preview) > 120 else content_preview
+                preview = (
+                    (content_preview[:120] + "...")
+                    if len(content_preview) > 120
+                    else content_preview
+                )
                 print(f"   [{i}] 📄 {doc_name} (匹配度: {score})\n       📝 {preview}", flush=True)
 
             await params.result_callback({"records": simplified})
@@ -260,7 +302,9 @@ async def search_web(params: FunctionCallParams, query: str):
 
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=6)) as resp:
+            async with session.post(
+                url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=6)
+            ) as resp:
                 dur_ms = (time.time() - t_start) * 1000
                 timing_str = f" (耗时: {dur_ms:.0f}ms)" if SHOW_LATENCY else ""
 
@@ -270,22 +314,33 @@ async def search_web(params: FunctionCallParams, query: str):
                     simplified = []
                     for r in results[:3]:
                         excerpts = "\n".join(r.get("excerpts", [])[:2])
-                        simplified.append({
-                            "title": r.get("title", ""),
-                            "url": r.get("url", ""),
-                            "snippet": excerpts,
-                        })
-                    print(f"✅ [网络搜索/Search]: 成功获取 {len(simplified)} 条实时结果{timing_str}:", flush=True)
+                        simplified.append(
+                            {
+                                "title": r.get("title", ""),
+                                "url": r.get("url", ""),
+                                "snippet": excerpts,
+                            }
+                        )
+                    print(
+                        f"✅ [网络搜索/Search]: 成功获取 {len(simplified)} 条实时结果{timing_str}:",
+                        flush=True,
+                    )
                     for i, item in enumerate(simplified, 1):
                         title = item.get("title", "无标题")
                         url = item.get("url", "")
                         snippet = item.get("snippet", "").strip().replace("\n", " ")
                         snippet_preview = (snippet[:120] + "...") if len(snippet) > 120 else snippet
-                        print(f"   [{i}] 📌 {title}\n       🔗 {url}\n       📝 {snippet_preview}", flush=True)
+                        print(
+                            f"   [{i}] 📌 {title}\n       🔗 {url}\n       📝 {snippet_preview}",
+                            flush=True,
+                        )
                     await params.result_callback({"results": simplified})
                 else:
                     err_msg = await resp.text()
-                    print(f"⚠️ [网络搜索/Search]: 失败 (Status {resp.status}{timing_str}): {err_msg}", flush=True)
+                    print(
+                        f"⚠️ [网络搜索/Search]: 失败 (Status {resp.status}{timing_str}): {err_msg}",
+                        flush=True,
+                    )
                     await params.result_callback({"error": f"HTTP {resp.status}: {err_msg}"})
     except Exception as e:
         dur_ms = (time.time() - t_start) * 1000
@@ -311,8 +366,8 @@ async def run_bot(room_url: str, token: str):
         ),
     )
 
-    # 2. Cartesia STT (Chinese Mandarin)
-    stt = CartesiaSTTService(
+    # 2. Cartesia STT (Chinese Mandarin with Ghost Token Filter)
+    stt = FilteredCartesiaSTTService(
         api_key=os.environ["CARTESIA_API_KEY"],
         settings=CartesiaSTTService.Settings(
             language=Language.ZH,
@@ -381,10 +436,10 @@ async def run_bot(room_url: str, token: str):
     context = LLMContext(tools=[search_knowledge_base, search_web])
     vad_analyzer = SileroVADAnalyzer(
         params=VADParams(
-            confidence=0.4,
-            start_secs=0.12,
-            stop_secs=0.2,
-            min_volume=0.15,
+            confidence=0.7,
+            start_secs=0.25,
+            stop_secs=0.3,
+            min_volume=0.20,
         )
     )
     user_turn_strategies = UserTurnStrategies(
@@ -470,7 +525,9 @@ async def run_bot(room_url: str, token: str):
             except Exception as e:
                 logger.warning(f"Could not capture participant audio: {e}")
 
-        greeting_text = "你好！我已经准备好了，支持专属知识库与实时联网搜索。请问今天有什么我可以帮你的？"
+        greeting_text = (
+            "你好！我已经准备好了，支持专属知识库与实时联网搜索。请问今天有什么我可以帮你的？"
+        )
         print(f"\n🤖 [助手/Bot]: {greeting_text}", flush=True)
         await tts.queue_frame(TTSSpeakFrame(greeting_text))
 
