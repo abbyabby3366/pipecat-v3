@@ -119,44 +119,158 @@
     <aside id="side-drawer" class="side-drawer glass-panel closed">
       <div class="drawer-header">
         <div class="drawer-title-group">
-          <i data-lucide="terminal"></i>
-          <h3>实时性能与工具遥测</h3>
+          <i data-lucide="activity" class="drawer-title-icon"></i>
+          <h3 id="drawer-main-title">实时遥测与配置</h3>
         </div>
-        <button id="close-drawer-btn" class="icon-btn-sm">
+        <button id="close-drawer-btn" class="icon-btn-sm" title="关闭面板">
           <i data-lucide="x"></i>
         </button>
       </div>
 
-      <!-- Real-time Latency Metrics HUD Card -->
-      <div class="metrics-hud-card glass-inner">
-        <div class="metrics-header">
-          <span class="hud-title">⚡ 极速响应延迟分析</span>
-          <span id="e2e-badge" class="e2e-badge">总延迟: -- ms</span>
+      <!-- Segmented Tab Navigation -->
+      <div class="drawer-tabs-nav">
+        <button class="drawer-tab-btn active" data-tab="metrics">
+          <i data-lucide="zap"></i>
+          <span>性能遥测</span>
+        </button>
+        <button class="drawer-tab-btn" data-tab="tools">
+          <i data-lucide="database"></i>
+          <span>知识与工具</span>
+        </button>
+        <button class="drawer-tab-btn" data-tab="system">
+          <i data-lucide="cpu"></i>
+          <span>系统架构</span>
+        </button>
+      </div>
+
+      <!-- Tab 1: Real-time Latency Metrics -->
+      <div id="tab-pane-metrics" class="drawer-tab-pane active">
+        <!-- Latency Metrics HUD Card -->
+        <div class="metrics-hud-card glass-inner">
+          <div class="metrics-header">
+            <div class="hud-title-wrap">
+              <span class="hud-title">⚡ 极速响应延迟分析</span>
+              <span class="hud-subtitle">实时端到端 (E2E)</span>
+            </div>
+            <span id="e2e-badge" class="e2e-badge">总延迟: -- ms</span>
+          </div>
+
+          <div class="metrics-grid">
+            <div class="metric-item">
+              <div class="metric-item-header">
+                <span class="metric-label">🎙️ STT (Cartesia)</span>
+                <span class="metric-desc">语音识别结算</span>
+              </div>
+              <span id="metric-stt" class="metric-value">-- ms</span>
+            </div>
+            <div class="metric-item highlight-card">
+              <div class="metric-item-header">
+                <span class="metric-label">🧠 LLM 首字 (Cerebras)</span>
+                <span class="metric-desc">TTFT 首字耗时</span>
+              </div>
+              <span id="metric-llm" class="metric-value highlight">-- ms</span>
+            </div>
+            <div class="metric-item">
+              <div class="metric-item-header">
+                <span class="metric-label">🔊 TTS 首包 (Cartesia)</span>
+                <span class="metric-desc">TTFA 首包音频</span>
+              </div>
+              <span id="metric-tts" class="metric-value">-- ms</span>
+            </div>
+            <div class="metric-item">
+              <div class="metric-item-header">
+                <span class="metric-label">🛠️ 工具耗时 (KB/Web)</span>
+                <span class="metric-desc">检索与查询执行</span>
+              </div>
+              <span id="metric-tools" class="metric-value">-- ms</span>
+            </div>
+          </div>
         </div>
-        <div class="metrics-grid">
-          <div class="metric-item">
-            <span class="metric-label">🎙️ STT (Cartesia)</span>
-            <span id="metric-stt" class="metric-value">-- ms</span>
+
+        <!-- Latency Status Rating Box -->
+        <div class="speed-benchmark-card glass-inner">
+          <div class="benchmark-header">
+            <i data-lucide="sparkles"></i>
+            <span>极速架构指标</span>
           </div>
-          <div class="metric-item">
-            <span class="metric-label">🧠 LLM 首字 (Cerebras)</span>
-            <span id="metric-llm" class="metric-value highlight">-- ms</span>
-          </div>
-          <div class="metric-item">
-            <span class="metric-label">🔊 TTS 首包 (Cartesia)</span>
-            <span id="metric-tts" class="metric-value">-- ms</span>
-          </div>
-          <div class="metric-item">
-            <span class="metric-label">🛠️ 工具耗时 (KB/Search)</span>
-            <span id="metric-tools" class="metric-value">-- ms</span>
+          <div class="benchmark-tags">
+            <span class="speed-tag speed-ultra">⚡ Cerebras 超快推理</span>
+            <span class="speed-tag speed-stream">🌊 流式 Token 渲染</span>
+            <span class="speed-tag speed-vad">🎙️ 智能静音截断</span>
           </div>
         </div>
       </div>
 
-      <!-- Tool Activity Log -->
-      <div id="tool-activity-feed" class="tool-activity-feed">
-        <div class="system-intro-card glass-inner">
-          <p>👋 <strong>实时语音连接中</strong>。支持 <strong>Misuedi ARK 知识库</strong>检索与 <strong>Parallel 实时搜索</strong>。</p>
+      <!-- Tab 2: Knowledge Base & Tool Activity -->
+      <div id="tab-pane-tools" class="drawer-tab-pane hidden">
+        <!-- Integrated Services Cards -->
+        <div class="tools-overview-list">
+          <div class="service-chip glass-inner">
+            <div class="service-icon-box kb-icon">📚</div>
+            <div class="service-info">
+              <div class="service-title-row">
+                <span class="service-name">Misuedi ARK 知识库</span>
+                <span class="service-status ready">已连接</span>
+              </div>
+              <p class="service-desc">ARK 项目白皮书、代币经济学与异步共识架构知识库</p>
+            </div>
+          </div>
+
+          <div class="service-chip glass-inner">
+            <div class="service-icon-box search-icon">🌐</div>
+            <div class="service-info">
+              <div class="service-title-row">
+                <span class="service-name">Parallel 实时联网搜索</span>
+                <span class="service-status ready">已连接</span>
+              </div>
+              <p class="service-desc">Turbo 实时搜索模式，快速获取今日天气、金融行情与突发新闻</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="section-divider">
+          <span>工具调用遥测记录</span>
+        </div>
+
+        <!-- Tool Activity Log Feed -->
+        <div id="tool-activity-feed" class="tool-activity-feed">
+          <div class="system-intro-card glass-inner">
+            <p>👋 <strong>实时语音连接中</strong>。当询问 ARK 知识或实时搜索时，调用过程与匹配结果将实时记录在此处。</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab 3: System Architecture & Configuration -->
+      <div id="tab-pane-system" class="drawer-tab-pane hidden">
+        <div class="system-specs-list glass-inner">
+          <div class="spec-row">
+            <span class="spec-label">🧠 LLM 大模型</span>
+            <span class="spec-val">Llama 3.3 70B (Cerebras)</span>
+          </div>
+          <div class="spec-row">
+            <span class="spec-label">🎙️ STT 语音识别</span>
+            <span class="spec-val">Cartesia ink-whisper (中文)</span>
+          </div>
+          <div class="spec-row">
+            <span class="spec-label">🔊 TTS 语音合成</span>
+            <span class="spec-val">Cartesia sonic-3.5 (中文)</span>
+          </div>
+          <div class="spec-row">
+            <span class="spec-label">📡 音视频传输</span>
+            <span class="spec-val">Daily.co WebRTC (Opus)</span>
+          </div>
+          <div class="spec-row">
+            <span class="spec-label">⚡ 交互框架</span>
+            <span class="spec-val">Pipecat RTVI v2.1.0</span>
+          </div>
+          <div class="spec-row">
+            <span class="spec-label">🏝️ 灵动状态岛</span>
+            <span class="spec-val">Apple-Style Dynamic Island</span>
+          </div>
+          <div class="spec-row">
+            <span class="spec-label">🔄 状态</span>
+            <span class="spec-val highlight-emerald">就绪 (Online)</span>
+          </div>
         </div>
       </div>
     </aside>

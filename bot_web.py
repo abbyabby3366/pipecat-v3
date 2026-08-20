@@ -37,6 +37,7 @@ from pipecat.processors.frameworks.rtvi import (
     RTVIFunctionCallReportLevel,
     RTVIObserverParams,
 )
+from pipecat.processors.frameworks.rtvi.frames import RTVIServerMessageFrame
 from pipecat.services.cartesia.stt import CartesiaSTTService
 from pipecat.services.cartesia.tts import CartesiaTTSService, GenerationConfig
 from pipecat.services.llm_service import FunctionCallParams
@@ -108,6 +109,40 @@ class TranscriptLogger(FrameProcessor):
         if not self._in_bot_response and (self._pending_breakdown or self._pending_total_latency):
             self.print_latency_report()
 
+    async def emit_latency_frame(self):
+        """Send latency telemetry report frame to RTVI client."""
+        stt_ms = None
+        llm_ms = None
+        tts_ms = None
+        tools_ms = None
+        if self._pending_breakdown is not None:
+            bd = self._pending_breakdown
+            if bd.user_turn_secs is not None:
+                stt_ms = round(bd.user_turn_secs * 1000)
+            for t in bd.ttfb:
+                if "LLM" in t.processor or "OpenRouter" in t.processor:
+                    llm_ms = round(t.duration_secs * 1000)
+                elif "TTS" in t.processor or "CartesiaTTS" in t.processor:
+                    tts_ms = round(t.duration_secs * 1000)
+            if bd.function_calls:
+                tools_ms = round(sum(fc.duration_secs for fc in bd.function_calls) * 1000)
+
+        total_latency_ms = (
+            round(self._pending_total_latency * 1000)
+            if self._pending_total_latency is not None
+            else None
+        )
+
+        report = {
+            "type": "latency_report",
+            "stt_ms": stt_ms,
+            "llm_ms": llm_ms,
+            "tts_ms": tts_ms,
+            "tools_ms": tools_ms,
+            "total_latency_ms": total_latency_ms,
+        }
+        await self.push_frame(RTVIServerMessageFrame(data=report))
+
     def print_latency_report(self):
         """Output structured latency telemetry to console."""
         if not SHOW_LATENCY:
@@ -173,6 +208,7 @@ class TranscriptLogger(FrameProcessor):
                 print("", flush=True)
                 self._in_bot_response = False
                 self._user_speech_time = None
+                await self.emit_latency_frame()
                 self.print_latency_report()
 
         await self.push_frame(frame, direction)
@@ -465,19 +501,18 @@ async def run_bot(room_url: str, token: str):
 
     transcript_logger = TranscriptLogger()
 
-    observers = []
-    if SHOW_LATENCY:
-        latency_observer = UserBotLatencyObserver()
+    # Latency & Telemetry Observer (always registered to feed RTVI client HUD & console)
+    latency_observer = UserBotLatencyObserver()
 
-        @latency_observer.event_handler("on_latency_breakdown")
-        async def on_latency_breakdown(observer, breakdown):
-            transcript_logger.set_latency_breakdown(breakdown)
+    @latency_observer.event_handler("on_latency_breakdown")
+    async def on_latency_breakdown(observer, breakdown):
+        transcript_logger.set_latency_breakdown(breakdown)
 
-        @latency_observer.event_handler("on_latency_measured")
-        async def on_latency_measured(observer, latency_secs):
-            transcript_logger.set_total_latency(latency_secs)
+    @latency_observer.event_handler("on_latency_measured")
+    async def on_latency_measured(observer, latency_secs):
+        transcript_logger.set_total_latency(latency_secs)
 
-        observers.append(latency_observer)
+    observers = [latency_observer]
 
     # 6. Pipeline Assembly
     pipeline = Pipeline(

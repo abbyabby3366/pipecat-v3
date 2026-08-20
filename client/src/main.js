@@ -5,7 +5,22 @@
 
 import { PipecatClient, RTVIEvent } from '@pipecat-ai/client-js';
 import { DailyTransport } from '@pipecat-ai/daily-transport';
-import { createIcons, Activity, Info, Phone, PhoneOff, Mic, MicOff, Volume2, X, Terminal } from 'lucide';
+import {
+  createIcons,
+  Activity,
+  Info,
+  Phone,
+  PhoneOff,
+  Mic,
+  MicOff,
+  Volume2,
+  X,
+  Terminal,
+  Zap,
+  Database,
+  Cpu,
+  Sparkles,
+} from 'lucide';
 
 import { AuroraBackground } from './components/aurora-background.js';
 import { ReactiveOrb } from './components/reactive-orb.js';
@@ -31,11 +46,13 @@ const agentStateText = document.getElementById('agent-state-text');
 const orbSpokenText = document.getElementById('orb-spoken-text');
 const botAudio = document.getElementById('bot-audio');
 
-// Drawer & Metrics Elements
+// Drawer & Tab Elements
 const sideDrawer = document.getElementById('side-drawer');
 const toggleDrawerBtn = document.getElementById('toggle-drawer-btn');
 const closeDrawerBtn = document.getElementById('close-drawer-btn');
 const toggleMetricsBtn = document.getElementById('toggle-metrics-btn');
+const drawerTabBtns = document.querySelectorAll('.drawer-tab-btn');
+const drawerTabPanes = document.querySelectorAll('.drawer-tab-pane');
 const toolActivityFeed = document.getElementById('tool-activity-feed');
 
 const metricStt = document.getElementById('metric-stt');
@@ -52,6 +69,8 @@ let hasSphereMovedDown = false;
 let currentBotMsgElement = null;
 let currentBotText = '';
 let wakeLock = null;
+let activeDrawerTab = 'metrics';
+let toolStartTime = null;
 
 async function requestWakeLock() {
   try {
@@ -92,6 +111,10 @@ function refreshIcons() {
       Volume2,
       X,
       Terminal,
+      Zap,
+      Database,
+      Cpu,
+      Sparkles,
     },
   });
 }
@@ -102,7 +125,7 @@ function setAgentState(state, text) {
   orb.setState(state);
   agentStatePill.dataset.state = state;
   agentStateText.textContent = text;
-  
+
   const iconMap = {
     idle: '✨',
     listening: '🎙️',
@@ -147,19 +170,86 @@ function scrollToBottom() {
   conversationStream.scrollTop = conversationStream.scrollHeight;
 }
 
-// Drawer Toggle
-function toggleDrawer(forceOpen = null) {
-  const shouldOpen = forceOpen !== null ? forceOpen : sideDrawer.classList.contains('closed');
-  if (shouldOpen) {
-    sideDrawer.classList.remove('closed');
+// Update Metric UI Helpers
+function updateMetricValue(element, val) {
+  if (!element || val === undefined || val === null || isNaN(val)) return;
+  element.textContent = `${Math.round(val)} ms`;
+}
+
+function updateE2EBadge(val) {
+  if (!e2eBadge || val === undefined || val === null || isNaN(val)) return;
+  const rounded = Math.round(val);
+  e2eBadge.textContent = `总延迟: ${rounded} ms`;
+  if (rounded < 900) {
+    e2eBadge.className = 'e2e-badge fast';
   } else {
-    sideDrawer.classList.add('closed');
+    e2eBadge.className = 'e2e-badge';
   }
 }
 
-toggleDrawerBtn.addEventListener('click', () => toggleDrawer());
-closeDrawerBtn.addEventListener('click', () => toggleDrawer(false));
-toggleMetricsBtn.addEventListener('click', () => toggleDrawer(true));
+// Drawer & Tab Switcher Management
+function switchDrawerTab(tabId) {
+  activeDrawerTab = tabId;
+  drawerTabBtns.forEach((btn) => {
+    if (btn.dataset.tab === tabId) {
+      btn.classList.add('active');
+    } else {
+      btn.classList.remove('active');
+    }
+  });
+
+  drawerTabPanes.forEach((pane) => {
+    if (pane.id === `tab-pane-${tabId}`) {
+      pane.classList.remove('hidden');
+      pane.classList.add('active');
+    } else {
+      pane.classList.add('hidden');
+      pane.classList.remove('active');
+    }
+  });
+
+  // Update Header Button active highlights
+  if (tabId === 'metrics') {
+    toggleMetricsBtn.classList.add('active');
+    toggleDrawerBtn.classList.remove('active');
+  } else {
+    toggleDrawerBtn.classList.add('active');
+    toggleMetricsBtn.classList.remove('active');
+  }
+}
+
+function toggleDrawer(targetTab = null, forceOpen = null) {
+  const isCurrentlyOpen = !sideDrawer.classList.contains('closed');
+  let shouldOpen = forceOpen !== null ? forceOpen : !isCurrentlyOpen;
+
+  // If clicking the same button when already open with that tab, toggle close
+  if (targetTab && isCurrentlyOpen && activeDrawerTab === targetTab && forceOpen === null) {
+    shouldOpen = false;
+  }
+
+  if (shouldOpen) {
+    if (targetTab) {
+      switchDrawerTab(targetTab);
+    }
+    sideDrawer.classList.remove('closed');
+  } else {
+    sideDrawer.classList.add('closed');
+    toggleMetricsBtn.classList.remove('active');
+    toggleDrawerBtn.classList.remove('active');
+  }
+}
+
+// Tab navigation button click listeners
+drawerTabBtns.forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const tab = btn.dataset.tab;
+    if (tab) switchDrawerTab(tab);
+  });
+});
+
+toggleMetricsBtn.addEventListener('click', () => toggleDrawer('metrics'));
+toggleDrawerBtn.addEventListener('click', () => toggleDrawer('tools'));
+closeDrawerBtn.addEventListener('click', () => toggleDrawer(null, false));
 
 // Connect / Start WebRTC Call
 async function startCall() {
@@ -296,6 +386,7 @@ async function startCall() {
     let currentSearchType = 'web';
 
     const handleToolCallStarted = (call) => {
+      toolStartTime = performance.now();
       const fnName = call?.function_name || 'Tool';
       const isKB = fnName.includes('knowledge');
       const query = call?.args?.query || call?.arguments?.query || '';
@@ -324,38 +415,63 @@ async function startCall() {
       conversationMessages.appendChild(toolBubble);
       scrollToBottom();
       activeToolBubble = toolBubble;
-
-      // Add entry to telemetry drawer feed
-      const card = document.createElement('div');
-      card.className = 'tool-event-card';
-      card.innerHTML = `
-        <div class="tool-badge">
-          <span>${isKB ? '📚 Misuedi ARK 知识库' : '🌐 Parallel 实时搜索'}</span>
-        </div>
-        <div style="font-size: 0.8rem; color: var(--text-muted);">
-          查询关键词: <em>${query || fnName}</em>
-        </div>
-      `;
-      toolActivityFeed.appendChild(card);
     };
 
     client.on(RTVIEvent.LLMFunctionCall, handleToolCallStarted);
     client.on(RTVIEvent.LLMFunctionCallStarted, handleToolCallStarted);
     client.on(RTVIEvent.LLMFunctionCallInProgress, handleToolCallStarted);
 
-    // Display search results on the Dynamic Island when search completes
+    // Display search results on the Dynamic Island and Telemetry Feed when search completes
     client.on(RTVIEvent.LLMFunctionCallStopped, (data) => {
+      const durationMs = toolStartTime ? Math.round(performance.now() - toolStartTime) : null;
+      if (durationMs !== null) {
+        updateMetricValue(metricTools, durationMs);
+      }
+
       const fnName = data?.function_name || '';
       const isKB = fnName.includes('knowledge') || currentSearchType === 'kb';
       const result = data?.result;
+      let resultCount = 0;
+      let snippetPreview = '';
 
       if (result) {
         if (result.results && Array.isArray(result.results)) {
           dynamicIsland.showResults(currentSearchQuery, result.results, 'web');
+          resultCount = result.results.length;
+          if (resultCount > 0 && result.results[0].title) {
+            snippetPreview = result.results[0].title;
+          }
         } else if (result.records && Array.isArray(result.records)) {
           dynamicIsland.showResults(currentSearchQuery, result.records, 'kb');
+          resultCount = result.records.length;
+          if (resultCount > 0 && result.records[0].document) {
+            snippetPreview = `${result.records[0].document} (匹配度: ${result.records[0].score || ''})`;
+          }
         }
       }
+
+      // Append card to telemetry feed
+      const card = document.createElement('div');
+      card.className = `tool-event-card ${isKB ? 'kb' : 'search'}`;
+      card.innerHTML = `
+        <div class="tool-event-header">
+          <div class="tool-badge ${isKB ? 'kb' : ''}">
+            <span>${isKB ? '📚 Misuedi ARK 知识库' : '🌐 Parallel 实时搜索'}</span>
+          </div>
+          ${durationMs ? `<span class="tool-time-badge">${durationMs} ms</span>` : ''}
+        </div>
+        <div class="tool-query-text">
+          查询关键词: <em>${currentSearchQuery || fnName}</em>
+        </div>
+        ${
+          snippetPreview
+            ? `<div class="tool-result-preview">
+                 <span>匹配 ${resultCount} 条结果: ${snippetPreview}</span>
+               </div>`
+            : ''
+        }
+      `;
+      toolActivityFeed.appendChild(card);
     });
 
     client.on(RTVIEvent.BotStartedSpeaking, () => {
@@ -370,13 +486,61 @@ async function startCall() {
       }
     });
 
-    // 6. Metrics & Latency Telemetry
+    // 6. Metrics & Latency Telemetry (RTVI Protocol Metrics)
     client.on(RTVIEvent.Metrics, (metrics) => {
-      if (metrics?.ttfb) {
-        const ttfb = Math.round(metrics.ttfb * 1000);
-        metricTts.textContent = `${ttfb} ms`;
+      if (!metrics) return;
+
+      // Handle TTFB metrics array
+      if (Array.isArray(metrics.ttfb)) {
+        metrics.ttfb.forEach((item) => {
+          const proc = item.processor || '';
+          const ms = Math.round((item.value || 0) * 1000);
+          if (proc.includes('TTS') || proc.includes('CartesiaTTS')) {
+            updateMetricValue(metricTts, ms);
+          } else if (proc.includes('LLM') || proc.includes('OpenRouter') || proc.includes('Cerebras')) {
+            updateMetricValue(metricLlm, ms);
+          }
+        });
+      } else if (typeof metrics.ttfb === 'number') {
+        updateMetricValue(metricTts, Math.round(metrics.ttfb * 1000));
+      }
+
+      // Handle Processing metrics array (e.g. STT)
+      if (Array.isArray(metrics.processing)) {
+        metrics.processing.forEach((item) => {
+          const proc = item.processor || '';
+          const ms = Math.round((item.value || 0) * 1000);
+          if (proc.includes('STT') || proc.includes('CartesiaSTT')) {
+            updateMetricValue(metricStt, ms);
+          }
+        });
       }
     });
+
+    // 7. Custom Server-side Latency Breakdown & Telemetry Messages
+    const handleServerMessage = (data) => {
+      if (!data) return;
+      if (data.type === 'latency_report') {
+        if (data.stt_ms !== undefined && data.stt_ms !== null) {
+          updateMetricValue(metricStt, data.stt_ms);
+        }
+        if (data.llm_ms !== undefined && data.llm_ms !== null) {
+          updateMetricValue(metricLlm, data.llm_ms);
+        }
+        if (data.tts_ms !== undefined && data.tts_ms !== null) {
+          updateMetricValue(metricTts, data.tts_ms);
+        }
+        if (data.tools_ms !== undefined && data.tools_ms !== null) {
+          updateMetricValue(metricTools, data.tools_ms);
+        }
+        if (data.total_latency_ms !== undefined && data.total_latency_ms !== null) {
+          updateE2EBadge(data.total_latency_ms);
+        }
+      }
+    };
+
+    client.on(RTVIEvent.ServerMessage, handleServerMessage);
+    client.on('server-message', handleServerMessage);
 
     // Connect to Daily room using credentials
     await client.connect({
