@@ -13,6 +13,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
+from pydantic import BaseModel, Field
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
@@ -37,7 +38,10 @@ from pipecat.processors.frameworks.rtvi import (
     RTVIFunctionCallReportLevel,
     RTVIObserverParams,
 )
-from pipecat.processors.frameworks.rtvi.frames import RTVIServerMessageFrame
+from pipecat.processors.frameworks.rtvi.frames import (
+    RTVIClientMessageFrame,
+    RTVIServerMessageFrame,
+)
 from pipecat.services.cartesia.stt import CartesiaSTTService
 from pipecat.services.cartesia.tts import CartesiaTTSService, GenerationConfig
 from pipecat.services.llm_service import FunctionCallParams
@@ -92,6 +96,11 @@ class TranscriptLogger(FrameProcessor):
         self._user_speech_time = None
         self._pending_breakdown = None
         self._pending_total_latency = None
+        self._tts = None
+
+    def set_tts_service(self, tts):
+        """Bind TTS service instance to support runtime configuration updates."""
+        self._tts = tts
 
     def mark_user_speech(self):
         """Record the timestamp when user speech was detected."""
@@ -185,10 +194,22 @@ class TranscriptLogger(FrameProcessor):
             self._pending_total_latency = None
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
-        """Process stream frames for real-time transcription logging."""
+        """Process stream frames for real-time transcription logging and client commands."""
         await super().process_frame(frame, direction)
 
-        if isinstance(frame, TranscriptionFrame):
+        if isinstance(frame, RTVIClientMessageFrame) and frame.type == "set-voice-speed":
+            if isinstance(frame.data, dict) and "speed" in frame.data:
+                try:
+                    new_speed = float(frame.data["speed"])
+                    new_speed = max(0.6, min(1.5, new_speed))
+                    if self._tts and hasattr(self._tts, "_settings"):
+                        if self._tts._settings.generation_config:
+                            self._tts._settings.generation_config.speed = new_speed
+                            print(f"\n🔊 [系统/TTS]: 动态语速已更新为 {new_speed:.2f}x", flush=True)
+                except Exception as e:
+                    logger.warning(f"Could not update voice speed: {e}")
+
+        elif isinstance(frame, TranscriptionFrame):
             if frame.text and frame.text.strip():
                 self.mark_user_speech()
                 print(f"\n🗣️  [用户/User]: {frame.text.strip()}", flush=True)
@@ -385,9 +406,9 @@ async def search_web(params: FunctionCallParams, query: str):
         await params.result_callback({"error": f"Search failed: {str(e)}"})
 
 
-async def run_bot(room_url: str, token: str):
+async def run_bot(room_url: str, token: str, voice_speed: float = 1.0):
     """Spawn and execute a Pipecat Daily WebRTC worker session for a room."""
-    logger.info(f"Initializing Daily Voice Agent session for room: {room_url}")
+    logger.info(f"Initializing Daily Voice Agent session (voice_speed={voice_speed:.2f}x) for room: {room_url}")
 
     # 1. Daily Transport
     transport = DailyTransport(
@@ -438,11 +459,12 @@ async def run_bot(room_url: str, token: str):
         },
     )
 
-    # 4. Cartesia TTS (Chinese Conversational Voice)
+    # 4. Cartesia TTS (Chinese Conversational Voice with configurable speed)
     voice_id = os.getenv("CARTESIA_VOICE_ID", "e90c6678-f0d3-4767-9883-5d0ecf5894a8")
     if not voice_id or voice_id == "...":
         voice_id = "e90c6678-f0d3-4767-9883-5d0ecf5894a8"
 
+    initial_speed = max(0.6, min(1.5, float(voice_speed)))
     tts = CartesiaTTSService(
         api_key=os.environ["CARTESIA_API_KEY"],
         settings=CartesiaTTSService.Settings(
@@ -450,7 +472,7 @@ async def run_bot(room_url: str, token: str):
             language=Language.ZH,
             voice=voice_id,
             generation_config=GenerationConfig(
-                speed=1.0,
+                speed=initial_speed,
                 emotion="content",
             ),
         ),
@@ -500,6 +522,7 @@ async def run_bot(room_url: str, token: str):
     )
 
     transcript_logger = TranscriptLogger()
+    transcript_logger.set_tts_service(tts)
 
     # Latency & Telemetry Observer (always registered to feed RTVI client HUD & console)
     latency_observer = UserBotLatencyObserver()
@@ -617,9 +640,16 @@ app.add_middleware(
 )
 
 
+class ConnectRequest(BaseModel):
+    """Connection parameters requested by frontend client."""
+
+    voice_speed: float = Field(default=1.0, ge=0.5, le=2.0)
+
+
 @app.post("/api/connect")
-async def connect():
+async def connect(req: ConnectRequest | None = None):
     """Create a temporary Daily room, generate tokens, spawn bot worker, and return credentials."""
+    request_params = req or ConnectRequest()
     daily_key = os.getenv("DAILY_API_KEY", "").strip()
     if not daily_key or daily_key == "...":
         raise HTTPException(
@@ -646,8 +676,10 @@ async def connect():
         bot_token = await helper.get_token(room.url, expiry_time=expiry_seconds, owner=True)
         client_token = await helper.get_token(room.url, expiry_time=expiry_seconds, owner=False)
 
-        # Launch bot worker in background
-        task = asyncio.create_task(run_bot(room.url, bot_token))
+        # Launch bot worker in background with requested voice speed
+        task = asyncio.create_task(
+            run_bot(room.url, bot_token, voice_speed=request_params.voice_speed)
+        )
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
 

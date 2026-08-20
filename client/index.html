@@ -32,7 +32,7 @@
         <div class="logo-badge">
           <span class="logo-dot"></span>
           <span class="logo-text">arkieai.agent</span>
-          <span class="version-tag">v1.5.0</span>
+          <span class="version-tag">v1.6.0</span>
         </div>
       </div>
 
@@ -242,6 +242,34 @@
 
       <!-- Tab 3: System Architecture & Configuration -->
       <div id="tab-pane-system" class="drawer-tab-pane hidden">
+        <!-- Voice Speed Configuration Card -->
+        <div class="voice-speed-card glass-inner">
+          <div class="voice-speed-header">
+            <div class="speed-title-wrap">
+              <span class="speed-title">🔊 语音播报语速</span>
+              <span class="speed-subtitle">Cartesia 实时倍速调节 (即时生效)</span>
+            </div>
+            <span id="voice-speed-badge" class="voice-speed-badge">1.0x 标准</span>
+          </div>
+
+          <div class="speed-slider-container">
+            <input type="range" id="voice-speed-slider" min="0.7" max="1.4" step="0.05" value="1.0"
+              class="speed-slider" />
+            <div class="speed-slider-labels">
+              <span>0.7x 慢速</span>
+              <span>1.0x 标准</span>
+              <span>1.4x 极速</span>
+            </div>
+          </div>
+
+          <div class="speed-preset-chips">
+            <button class="speed-chip" data-speed="0.8">0.8x 沉稳</button>
+            <button class="speed-chip active" data-speed="1.0">1.0x 标准</button>
+            <button class="speed-chip" data-speed="1.15">1.15x 推荐</button>
+            <button class="speed-chip" data-speed="1.35">1.35x 极速</button>
+          </div>
+        </div>
+
         <div class="system-specs-list glass-inner">
           <div class="spec-row">
             <span class="spec-label">🧠 LLM 大模型</span>

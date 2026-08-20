@@ -61,6 +61,11 @@ const metricTts = document.getElementById('metric-tts');
 const metricTools = document.getElementById('metric-tools');
 const e2eBadge = document.getElementById('e2e-badge');
 
+// Voice Speed Controls
+const voiceSpeedSlider = document.getElementById('voice-speed-slider');
+const voiceSpeedBadge = document.getElementById('voice-speed-badge');
+const speedChips = document.querySelectorAll('.speed-chip');
+
 // Global State
 let client = null;
 let isConnected = false;
@@ -71,6 +76,7 @@ let currentBotText = '';
 let wakeLock = null;
 let activeDrawerTab = 'metrics';
 let toolStartTime = null;
+let currentVoiceSpeed = parseFloat(localStorage.getItem('voice_speed') || '1.0');
 
 async function requestWakeLock() {
   try {
@@ -251,6 +257,62 @@ toggleMetricsBtn.addEventListener('click', () => toggleDrawer('metrics'));
 toggleDrawerBtn.addEventListener('click', () => toggleDrawer('tools'));
 closeDrawerBtn.addEventListener('click', () => toggleDrawer(null, false));
 
+// Voice Speed Management
+function getSpeedLabel(speed) {
+  if (speed <= 0.85) return `${speed.toFixed(2)}x 沉稳`;
+  if (speed >= 0.95 && speed <= 1.05) return '1.0x 标准';
+  if (speed > 1.05 && speed <= 1.25) return `${speed.toFixed(2)}x 推荐`;
+  return `${speed.toFixed(2)}x 极速`;
+}
+
+function setVoiceSpeed(speed, fromSlider = false) {
+  const clamped = Math.max(0.6, Math.min(1.5, parseFloat(speed)));
+  currentVoiceSpeed = clamped;
+  localStorage.setItem('voice_speed', clamped.toString());
+
+  if (voiceSpeedBadge) {
+    voiceSpeedBadge.textContent = getSpeedLabel(clamped);
+  }
+
+  if (voiceSpeedSlider && !fromSlider) {
+    voiceSpeedSlider.value = clamped.toString();
+  }
+
+  speedChips.forEach((chip) => {
+    const chipSpeed = parseFloat(chip.dataset.speed || '1.0');
+    if (Math.abs(chipSpeed - clamped) < 0.04) {
+      chip.classList.add('active');
+    } else {
+      chip.classList.remove('active');
+    }
+  });
+
+  // If connected, send dynamic update to bot
+  if (client && isConnected) {
+    try {
+      client.sendClientMessage('set-voice-speed', { speed: clamped });
+    } catch (err) {
+      console.warn('Could not send voice speed update:', err);
+    }
+  }
+}
+
+// Initialize Voice Speed Controls
+if (voiceSpeedSlider) {
+  voiceSpeedSlider.value = currentVoiceSpeed.toString();
+  voiceSpeedSlider.addEventListener('input', (e) => {
+    setVoiceSpeed(e.target.value, true);
+  });
+}
+
+speedChips.forEach((chip) => {
+  chip.addEventListener('click', () => {
+    const speed = parseFloat(chip.dataset.speed || '1.0');
+    setVoiceSpeed(speed);
+  });
+});
+setVoiceSpeed(currentVoiceSpeed);
+
 // Connect / Start WebRTC Call
 async function startCall() {
   callBtn.disabled = true;
@@ -259,7 +321,15 @@ async function startCall() {
   setOrbText('连接中...');
 
   try {
-    const resp = await fetch(`${window.location.origin}/api/connect`, { method: 'POST' });
+    const resp = await fetch(`${window.location.origin}/api/connect`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        voice_speed: currentVoiceSpeed,
+      }),
+    });
     if (!resp.ok) {
       const errData = await resp.json().catch(() => ({}));
       throw new Error(errData.detail || `Server error: ${resp.status}`);
