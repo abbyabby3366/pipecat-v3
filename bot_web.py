@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import re
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -72,16 +73,40 @@ _background_tasks = set()
 
 
 class FilteredCartesiaSTTService(CartesiaSTTService):
-    """Cartesia STT service with built-in hallucination filtering for Chinese."""
+    """Cartesia STT service with built-in hallucination filtering for Chinese (Whisper artifacts)."""
 
-    HALLUCINATION_TOKENS = {"你", "您", "呃", "啊", "哦"}
-    PUNCTUATION_CHARS = " \t\r\n.,!?。，、！？"
+    HALLUCINATION_PHRASES = {
+        # Single ghost filler tokens
+        "你", "您", "呃", "啊", "哦", "嗯",
+        # Whisper training dataset subtitle / video ending artifacts (frequently triggered on trailing silence)
+        "谢谢大家", "谢谢大家的收看", "谢谢大家的观看", "谢谢收看", "谢谢观看", "谢谢大家观看",
+        "感谢大家", "感谢大家的收看", "感谢大家的观看", "感谢收看", "感谢观看", "感谢聆听", "感谢观看与支持",
+        "欢迎订阅", "请订阅", "记得订阅", "订阅频道", "点赞关注", "点赞投币", "点赞订阅",
+        "中文字幕", "字幕制作", "字幕由", "字幕提供",
+        "thankyouforwatching", "thanksforwatching", "pleasesubscribe", "subscribe",
+    }
+    LEADING_PUNCTUATION_CHARS = (
+        "-", "—", "–", "─", "~", "～", "…", "⋯", "·", "・",
+        ".", ",", "!", "?", ";", ":",
+        "。", "，", "！", "？", "；", "：", "、",
+        "[", "]", "(", ")", "【", "】", "（", "）", "<", ">", "《", "》", "{", "}",
+        "\"", "'", "“", "”", "‘", "’",
+    )
+    PUNCTUATION_CHARS = " \t\r\n.,!?。，、！？…⋯··—–-─~～\"'“”‘’;:；："
 
     async def _on_transcript(self, data):
-        """Filter out standalone ghost tokens before pushing transcription frames."""
+        """Filter out ghost tokens, subtitle artifacts, and transcripts starting with punctuation."""
         text = data.get("text", "")
-        cleaned = text.strip(self.PUNCTUATION_CHARS)
-        if not cleaned or cleaned in self.HALLUCINATION_TOKENS:
+        trimmed = text.strip()
+        # Omit any transcript that is empty or starts with punctuation / subtitle markers (e.g. "- 谢谢大家", "...", "[音乐]")
+        if not trimmed or trimmed.startswith(self.LEADING_PUNCTUATION_CHARS):
+            return
+        # Omit if contains no letters or numbers
+        if not re.search(r"[\w]", trimmed, re.UNICODE):
+            return
+        # Normalize text by removing all spaces and punctuation for strict hallucination matching
+        normalized = re.sub(r"[\s\W_]+", "", trimmed, flags=re.UNICODE).lower()
+        if not normalized or normalized in self.HALLUCINATION_PHRASES:
             return
         await super()._on_transcript(data)
 
@@ -497,7 +522,7 @@ async def run_bot(room_url: str, token: str, voice_speed: float = 1.0):
             confidence=0.7,
             start_secs=0.25,
             stop_secs=0.3,
-            min_volume=0.20,
+            min_volume=0.23,
         )
     )
     user_turn_strategies = UserTurnStrategies(

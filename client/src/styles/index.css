@@ -314,6 +314,14 @@ body {
   font-style: italic;
 }
 
+.chat-bubble.tool-status.completed {
+  opacity: 0.88;
+}
+
+.chat-bubble.tool-status.completed .tool-status-spinner {
+  display: none !important;
+}
+
 /* Visual Stage */
 .visual-stage {
   flex: 1;

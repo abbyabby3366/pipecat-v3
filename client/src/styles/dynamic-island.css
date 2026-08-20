@@ -4,7 +4,7 @@
 
 #dynamic-island-container {
   position: fixed;
-  top: 14px;
+  top: calc(env(safe-area-inset-top, 0px) + 72px);
   left: 50%;
   transform: translateX(-50%);
   z-index: 9999;

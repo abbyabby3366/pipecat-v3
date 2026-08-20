@@ -380,8 +380,26 @@ async function startCall() {
     let currentUserMsgElement = null;
     let currentUserText = '';
 
+    // Helper to stop and complete all tool spinners once results/speech arrive
+    const stopAllToolSpinners = () => {
+      const spinners = conversationMessages?.querySelectorAll('.tool-status-spinner');
+      if (spinners) {
+        spinners.forEach((spinner) => {
+          spinner.style.display = 'none';
+        });
+      }
+      const bubbles = conversationMessages?.querySelectorAll('.chat-bubble.tool-status');
+      if (bubbles) {
+        bubbles.forEach((bubble) => {
+          bubble.classList.add('completed');
+        });
+      }
+      activeToolBubble = null;
+    };
+
     client.on(RTVIEvent.UserStartedSpeaking, () => {
       setAgentState('listening', '正在聆听...');
+      stopAllToolSpinners();
       currentBotMsgElement = null;
       currentBotText = '';
       currentUserMsgElement = null;
@@ -396,22 +414,36 @@ async function startCall() {
     });
 
     client.on(RTVIEvent.BotLlmStarted, () => {
+      stopAllToolSpinners();
       currentBotMsgElement = null;
       currentBotText = '';
     });
 
     client.on(RTVIEvent.BotStoppedSpeaking, () => {
       setAgentState('idle', '请说话...');
+      stopAllToolSpinners();
       currentBotMsgElement = null;
       currentBotText = '';
     });
+
+    const HALLUCINATION_PHRASES = new Set([
+      '你', '您', '呃', '啊', '哦', '嗯',
+      '谢谢大家', '谢谢大家的收看', '谢谢大家的观看', '谢谢收看', '谢谢观看', '谢谢大家观看',
+      '感谢大家', '感谢大家的收看', '感谢大家的观看', '感谢收看', '感谢观看', '感谢聆听',
+      '欢迎订阅', '请订阅', '记得订阅', '订阅频道', '点赞关注', '点赞投币', '点赞订阅',
+      '中文字幕', '字幕制作', '字幕由', '字幕提供',
+      'thankyouforwatching', 'thanksforwatching', 'pleasesubscribe', 'subscribe',
+    ]);
 
     // 4. Real-time Transcripts (Chat Bubbles in Scrollable Stream)
     client.on(RTVIEvent.UserTranscript, (data) => {
       if (data?.text) {
         moveSphereDown();
         const text = data.text.trim();
-        if (!text) return;
+        // Omit any transcript that is empty, starts with punctuation/symbols (e.g. "- 谢谢大家", "..."), or has no letters/numbers
+        if (!text || /^[\p{P}\p{S}]/u.test(text) || !/[\p{L}\p{N}]/u.test(text)) return;
+        const normalized = text.replace(/[\s\p{P}\p{S}]+/gu, '').toLowerCase();
+        if (HALLUCINATION_PHRASES.has(normalized)) return;
 
         if (data.final) {
           if (!currentUserMsgElement) {
@@ -429,6 +461,7 @@ async function startCall() {
     // Stream LLM tokens live character-by-character into chat bubble
     client.on(RTVIEvent.BotLlmText, (data) => {
       if (data?.text) {
+        stopAllToolSpinners();
         moveSphereDown();
         currentBotText += data.text;
 
@@ -444,6 +477,7 @@ async function startCall() {
     // Fallback for non-LLM bot transcripts (e.g. system speech)
     client.on(RTVIEvent.BotTranscript, (data) => {
       if (data?.text && !currentBotText) {
+        stopAllToolSpinners();
         moveSphereDown();
         currentBotText = data.text;
         currentBotMsgElement = appendChatMessage('bot', currentBotText);
@@ -472,19 +506,29 @@ async function startCall() {
       // Trigger Apple-style Dynamic Island at the top of the screen!
       dynamicIsland.showSearching(query, currentSearchType);
 
-      // Append visual status card directly into active conversation stream
+      // Append or update visual status card directly in active conversation stream
       moveSphereDown();
-      const toolBubble = document.createElement('div');
-      toolBubble.className = `chat-bubble tool-status ${typeClass}`;
-      toolBubble.innerHTML = `
-        <div class="tool-status-spinner"></div>
-        <div class="tool-status-text">
-          <span>${icon} ${actionLabel}${query ? `: <span class="tool-status-query">"${query}"</span>` : '...'}</span>
-        </div>
-      `;
-      conversationMessages.appendChild(toolBubble);
+      if (activeToolBubble && conversationMessages.contains(activeToolBubble)) {
+        activeToolBubble.className = `chat-bubble tool-status ${typeClass}`;
+        activeToolBubble.innerHTML = `
+          <div class="tool-status-spinner"></div>
+          <div class="tool-status-text">
+            <span>${icon} ${actionLabel}${query ? `: <span class="tool-status-query">"${query}"</span>` : '...'}</span>
+          </div>
+        `;
+      } else {
+        const toolBubble = document.createElement('div');
+        toolBubble.className = `chat-bubble tool-status ${typeClass}`;
+        toolBubble.innerHTML = `
+          <div class="tool-status-spinner"></div>
+          <div class="tool-status-text">
+            <span>${icon} ${actionLabel}${query ? `: <span class="tool-status-query">"${query}"</span>` : '...'}</span>
+          </div>
+        `;
+        conversationMessages.appendChild(toolBubble);
+        activeToolBubble = toolBubble;
+      }
       scrollToBottom();
-      activeToolBubble = toolBubble;
     };
 
     client.on(RTVIEvent.LLMFunctionCall, handleToolCallStarted);
@@ -493,6 +537,7 @@ async function startCall() {
 
     // Display search results on the Dynamic Island and Telemetry Feed when search completes
     client.on(RTVIEvent.LLMFunctionCallStopped, (data) => {
+      stopAllToolSpinners();
       const durationMs = toolStartTime ? Math.round(performance.now() - toolStartTime) : null;
       if (durationMs !== null) {
         updateMetricValue(metricTools, durationMs);
@@ -547,13 +592,7 @@ async function startCall() {
     client.on(RTVIEvent.BotStartedSpeaking, () => {
       setAgentState('speaking', '正在回答...');
       moveSphereDown();
-      if (activeToolBubble) {
-        const spinner = activeToolBubble.querySelector('.tool-status-spinner');
-        if (spinner) {
-          spinner.style.display = 'none';
-        }
-        activeToolBubble = null;
-      }
+      stopAllToolSpinners();
     });
 
     // 6. Metrics & Latency Telemetry (RTVI Protocol Metrics)
