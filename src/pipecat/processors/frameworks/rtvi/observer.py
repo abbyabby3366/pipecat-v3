@@ -227,8 +227,8 @@ class RTVIObserver(BaseObserver):
         self._frames_seen = set()
 
         self._bot_transcription = ""
-        self._last_user_audio_level = 0
-        self._last_bot_audio_level = 0
+        self._last_user_audio_level: float = 0.0
+        self._last_bot_audio_level: float = 0.0
         self._user_volume_tracker = AudioVolumeTracker()
         self._bot_volume_tracker = AudioVolumeTracker()
 
@@ -459,6 +459,7 @@ class RTVIObserver(BaseObserver):
         elif isinstance(frame, InterruptionFrame) and self._params.bot_speaking_enabled:
             # The bot's in-flight output was cut off (VAD barge-in or a programmatic
             # run_immediately interrupt). Let clients drop what it was mid-saying.
+            self._bot_transcription = ""
             await self.send_rtvi_message(RTVI.BotInterruptedMessage())
         elif (
             isinstance(frame, (TranscriptionFrame, InterimTranscriptionFrame))
@@ -470,6 +471,13 @@ class RTVIObserver(BaseObserver):
         elif isinstance(frame, LLMFullResponseStartFrame) and self._params.bot_llm_enabled:
             await self.send_rtvi_message(RTVI.BotLLMStartedMessage())
         elif isinstance(frame, LLMFullResponseEndFrame) and self._params.bot_llm_enabled:
+            if self._bot_transcription:
+                await self.send_rtvi_message(
+                    RTVI.BotTranscriptionMessage(
+                        data=RTVI.TextMessageData(text=self._bot_transcription)
+                    )
+                )
+                self._bot_transcription = ""
             await self.send_rtvi_message(RTVI.BotLLMStoppedMessage())
         elif isinstance(frame, LLMTextFrame) and self._params.bot_llm_enabled:
             await self._handle_llm_text_frame(frame)
@@ -828,7 +836,7 @@ class RTVIObserver(BaseObserver):
                         text = content
                     else:
                         # Anything else is a sequence of content parts.
-                        text = " ".join(item["text"] for item in content if "text" in item)
+                        text = " ".join(str(item["text"]) for item in content if "text" in item)
                     rtvi_message = RTVI.UserLLMTextMessage(data=RTVI.TextMessageData(text=text))
                     await self.send_rtvi_message(rtvi_message)
 
@@ -870,7 +878,7 @@ class RTVIObserver(BaseObserver):
     async def _send_server_response(self, frame: RTVIServerResponseFrame):
         """Send a response to the client for a specific request."""
         message = RTVI.ServerResponse(
-            id=str(frame.client_msg.msg_id),
+            id=frame.client_msg.msg_id,
             data=RTVI.RawServerResponseData(t=frame.client_msg.type, d=frame.data),
         )
         await self.send_rtvi_message(message)
@@ -880,6 +888,6 @@ class RTVIObserver(BaseObserver):
         assert frame.error is not None
 
         message = RTVI.ErrorResponse(
-            id=str(frame.client_msg.msg_id), data=RTVI.ErrorResponseData(error=frame.error)
+            id=frame.client_msg.msg_id, data=RTVI.ErrorResponseData(error=frame.error)
         )
         await self.send_rtvi_message(message)

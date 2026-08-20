@@ -233,6 +233,10 @@ async function startCall() {
       currentUserText = '';
     });
 
+    client.on(RTVIEvent.BotLlmStarted, () => {
+      currentBotMsgElement = null;
+      currentBotText = '';
+    });
 
     client.on(RTVIEvent.BotStoppedSpeaking, () => {
       setAgentState('idle', '请说话...');
@@ -260,7 +264,8 @@ async function startCall() {
       }
     });
 
-    client.on(RTVIEvent.BotTranscript, (data) => {
+    // Stream LLM tokens live character-by-character into chat bubble
+    client.on(RTVIEvent.BotLlmText, (data) => {
       if (data?.text) {
         moveSphereDown();
         currentBotText += data.text;
@@ -271,6 +276,15 @@ async function startCall() {
           currentBotMsgElement.textContent = currentBotText;
           scrollToBottom();
         }
+      }
+    });
+
+    // Fallback for non-LLM bot transcripts (e.g. system speech)
+    client.on(RTVIEvent.BotTranscript, (data) => {
+      if (data?.text && !currentBotText) {
+        moveSphereDown();
+        currentBotText = data.text;
+        currentBotMsgElement = appendChatMessage('bot', currentBotText);
       }
     });
 
