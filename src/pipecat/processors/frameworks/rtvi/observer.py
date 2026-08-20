@@ -459,7 +459,6 @@ class RTVIObserver(BaseObserver):
         elif isinstance(frame, InterruptionFrame) and self._params.bot_speaking_enabled:
             # The bot's in-flight output was cut off (VAD barge-in or a programmatic
             # run_immediately interrupt). Let clients drop what it was mid-saying.
-            self._bot_transcription = ""
             await self.send_rtvi_message(RTVI.BotInterruptedMessage())
         elif (
             isinstance(frame, (TranscriptionFrame, InterimTranscriptionFrame))
@@ -471,13 +470,6 @@ class RTVIObserver(BaseObserver):
         elif isinstance(frame, LLMFullResponseStartFrame) and self._params.bot_llm_enabled:
             await self.send_rtvi_message(RTVI.BotLLMStartedMessage())
         elif isinstance(frame, LLMFullResponseEndFrame) and self._params.bot_llm_enabled:
-            if self._bot_transcription:
-                await self.send_rtvi_message(
-                    RTVI.BotTranscriptionMessage(
-                        data=RTVI.TextMessageData(text=self._bot_transcription)
-                    )
-                )
-                self._bot_transcription = ""
             await self.send_rtvi_message(RTVI.BotLLMStoppedMessage())
         elif isinstance(frame, LLMTextFrame) and self._params.bot_llm_enabled:
             await self._handle_llm_text_frame(frame)

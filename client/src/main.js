@@ -10,6 +10,7 @@ import { createIcons, Activity, Info, Phone, PhoneOff, Mic, MicOff, Volume2, X, 
 import { AuroraBackground } from './components/aurora-background.js';
 import { ReactiveOrb } from './components/reactive-orb.js';
 import { AudioVisualizer } from './components/audio-visualizer.js';
+import { DynamicIsland } from './components/dynamic-island.js';
 
 // DOM Elements
 const appLayout = document.getElementById('app-layout');
@@ -76,6 +77,7 @@ function releaseWakeLock() {
 const aurora = new AuroraBackground('aurora-canvas');
 const orb = new ReactiveOrb('orb-canvas', { hue: 6.0 });
 const visualizer = new AudioVisualizer(orb);
+const dynamicIsland = new DynamicIsland('dynamic-island-container');
 
 // Initialize Lucide Icons
 function refreshIcons() {
@@ -288,19 +290,26 @@ async function startCall() {
       }
     });
 
-    // 5. Function Calling / Tools Notification
+    // 5. Function Calling / Tools Notification & Dynamic Island
     let activeToolBubble = null;
+    let currentSearchQuery = '';
+    let currentSearchType = 'web';
 
-    client.on(RTVIEvent.LLMFunctionCall, (call) => {
+    const handleToolCallStarted = (call) => {
       const fnName = call?.function_name || 'Tool';
       const isKB = fnName.includes('knowledge');
-      const query = call?.args?.query || '';
+      const query = call?.args?.query || call?.arguments?.query || '';
+      currentSearchQuery = query;
+      currentSearchType = isKB ? 'kb' : 'web';
       const actionLabel = isKB ? '正在检索专属知识库' : '正在联网搜索';
       const typeClass = isKB ? 'knowledge-base' : 'web-search';
       const icon = isKB ? '📚' : '🌐';
 
       setAgentState('thinking', isKB ? '检索专属知识库...' : '实时联网搜索...');
       setOrbText(isKB ? '正在检索知识库...' : '正在网上搜索...');
+
+      // Trigger Apple-style Dynamic Island at the top of the screen!
+      dynamicIsland.showSearching(query, currentSearchType);
 
       // Append visual status card directly into active conversation stream
       moveSphereDown();
@@ -328,6 +337,25 @@ async function startCall() {
         </div>
       `;
       toolActivityFeed.appendChild(card);
+    };
+
+    client.on(RTVIEvent.LLMFunctionCall, handleToolCallStarted);
+    client.on(RTVIEvent.LLMFunctionCallStarted, handleToolCallStarted);
+    client.on(RTVIEvent.LLMFunctionCallInProgress, handleToolCallStarted);
+
+    // Display search results on the Dynamic Island when search completes
+    client.on(RTVIEvent.LLMFunctionCallStopped, (data) => {
+      const fnName = data?.function_name || '';
+      const isKB = fnName.includes('knowledge') || currentSearchType === 'kb';
+      const result = data?.result;
+
+      if (result) {
+        if (result.results && Array.isArray(result.results)) {
+          dynamicIsland.showResults(currentSearchQuery, result.results, 'web');
+        } else if (result.records && Array.isArray(result.records)) {
+          dynamicIsland.showResults(currentSearchQuery, result.records, 'kb');
+        }
+      }
     });
 
     client.on(RTVIEvent.BotStartedSpeaking, () => {
@@ -377,6 +405,7 @@ function handleDisconnect() {
   releaseWakeLock();
   isConnected = false;
   hasSphereMovedDown = false;
+  dynamicIsland.hide();
   appLayout.classList.remove('sphere-down');
   conversationStream.classList.add('hidden');
   conversationMessages.innerHTML = '';
