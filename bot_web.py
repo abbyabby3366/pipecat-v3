@@ -43,8 +43,8 @@ from pipecat.processors.frameworks.rtvi.frames import (
     RTVIClientMessageFrame,
     RTVIServerMessageFrame,
 )
-from pipecat.services.cartesia.stt import CartesiaSTTService
-from pipecat.services.cartesia.tts import CartesiaTTSService, GenerationConfig
+from pipecat.services.elevenlabs.stt import ElevenLabsRealtimeSTTService
+from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
 from pipecat.services.llm_service import FunctionCallParams
 from pipecat.services.openrouter.llm import OpenRouterLLMService
 from pipecat.transcriptions.language import Language
@@ -70,45 +70,6 @@ logger.add(sys.stderr, level="INFO")
 SHOW_LATENCY = os.getenv("SHOW_LATENCY_METRICS", "false").strip().lower() in ("true", "1", "yes")
 
 _background_tasks = set()
-
-
-class FilteredCartesiaSTTService(CartesiaSTTService):
-    """Cartesia STT service with built-in hallucination filtering for Chinese (Whisper artifacts)."""
-
-    HALLUCINATION_PHRASES = {
-        # Single ghost filler tokens
-        "你", "您", "呃", "啊", "哦", "嗯",
-        # Whisper training dataset subtitle / video ending artifacts (frequently triggered on trailing silence)
-        "谢谢大家", "谢谢大家的收看", "谢谢大家的观看", "谢谢收看", "谢谢观看", "谢谢大家观看",
-        "感谢大家", "感谢大家的收看", "感谢大家的观看", "感谢收看", "感谢观看", "感谢聆听", "感谢观看与支持",
-        "欢迎订阅", "请订阅", "记得订阅", "订阅频道", "点赞关注", "点赞投币", "点赞订阅",
-        "中文字幕", "字幕制作", "字幕由", "字幕提供",
-        "thankyouforwatching", "thanksforwatching", "pleasesubscribe", "subscribe",
-    }
-    LEADING_PUNCTUATION_CHARS = (
-        "-", "—", "–", "─", "~", "～", "…", "⋯", "·", "・",
-        ".", ",", "!", "?", ";", ":",
-        "。", "，", "！", "？", "；", "：", "、",
-        "[", "]", "(", ")", "【", "】", "（", "）", "<", ">", "《", "》", "{", "}",
-        "\"", "'", "“", "”", "‘", "’",
-    )
-    PUNCTUATION_CHARS = " \t\r\n.,!?。，、！？…⋯··—–-─~～\"'“”‘’;:；："
-
-    async def _on_transcript(self, data):
-        """Filter out ghost tokens, subtitle artifacts, and transcripts starting with punctuation."""
-        text = data.get("text", "")
-        trimmed = text.strip()
-        # Omit any transcript that is empty or starts with punctuation / subtitle markers (e.g. "- 谢谢大家", "...", "[音乐]")
-        if not trimmed or trimmed.startswith(self.LEADING_PUNCTUATION_CHARS):
-            return
-        # Omit if contains no letters or numbers
-        if not re.search(r"[\w]", trimmed, re.UNICODE):
-            return
-        # Normalize text by removing all spaces and punctuation for strict hallucination matching
-        normalized = re.sub(r"[\s\W_]+", "", trimmed, flags=re.UNICODE).lower()
-        if not normalized or normalized in self.HALLUCINATION_PHRASES:
-            return
-        await super()._on_transcript(data)
 
 
 class TranscriptLogger(FrameProcessor):
@@ -156,7 +117,7 @@ class TranscriptLogger(FrameProcessor):
             for t in bd.ttfb:
                 if "LLM" in t.processor or "OpenRouter" in t.processor:
                     llm_ms = round(t.duration_secs * 1000)
-                elif "TTS" in t.processor or "CartesiaTTS" in t.processor:
+                elif "TTS" in t.processor or "CartesiaTTS" in t.processor or "ElevenLabsTTS" in t.processor:
                     tts_ms = round(t.duration_secs * 1000)
             if bd.function_calls:
                 tools_ms = round(sum(fc.duration_secs for fc in bd.function_calls) * 1000)
@@ -192,6 +153,8 @@ class TranscriptLogger(FrameProcessor):
             for t in bd.ttfb:
                 proc_label = (
                     t.processor.replace("OpenRouterLLMService#0", "🧠 LLM (Cerebras)")
+                    .replace("ElevenLabsTTSService#0", "🔊 TTS (ElevenLabs)")
+                    .replace("ElevenLabsRealtimeSTTService#0", "🎙️ STT (ElevenLabs)")
                     .replace("CartesiaTTSService#0", "🔊 TTS (Cartesia)")
                     .replace("CartesiaSTTService#0", "🎙️ STT (Cartesia)")
                 )
@@ -226,9 +189,12 @@ class TranscriptLogger(FrameProcessor):
             if isinstance(frame.data, dict) and "speed" in frame.data:
                 try:
                     new_speed = float(frame.data["speed"])
-                    new_speed = max(0.6, min(1.5, new_speed))
+                    new_speed = max(0.7, min(1.2, new_speed))
                     if self._tts and hasattr(self._tts, "_settings"):
-                        if self._tts._settings.generation_config:
+                        if hasattr(self._tts._settings, "speed"):
+                            self._tts._settings.speed = new_speed
+                            print(f"\n🔊 [系统/TTS]: 动态语速已更新为 {new_speed:.2f}x", flush=True)
+                        elif hasattr(self._tts._settings, "generation_config") and self._tts._settings.generation_config:
                             self._tts._settings.generation_config.speed = new_speed
                             print(f"\n🔊 [系统/TTS]: 动态语速已更新为 {new_speed:.2f}x", flush=True)
                 except Exception as e:
@@ -448,12 +414,11 @@ async def run_bot(room_url: str, token: str, voice_speed: float = 1.0):
         ),
     )
 
-    # 2. Cartesia STT (Chinese Mandarin with Ghost Token Filter)
-    stt = FilteredCartesiaSTTService(
-        api_key=os.environ["CARTESIA_API_KEY"],
-        settings=CartesiaSTTService.Settings(
+    # 2. ElevenLabs Realtime STT (Scribe v2 Realtime)
+    stt = ElevenLabsRealtimeSTTService(
+        api_key=os.environ["ELEVENLABS_API_KEY"],
+        settings=ElevenLabsRealtimeSTTService.Settings(
             language=Language.ZH,
-            model="ink-whisper",
         ),
     )
 
@@ -484,22 +449,20 @@ async def run_bot(room_url: str, token: str, voice_speed: float = 1.0):
         },
     )
 
-    # 4. Cartesia TTS (Chinese Conversational Voice with configurable speed)
-    voice_id = os.getenv("CARTESIA_VOICE_ID", "e90c6678-f0d3-4767-9883-5d0ecf5894a8")
+    # 4. ElevenLabs TTS (Chinese / Multilingual Voice with configurable speed)
+    voice_id = os.getenv("ELEVENLABS_VOICE_ID", "lt7GBaCoAHWbT7JSZ5Xs")
     if not voice_id or voice_id == "...":
-        voice_id = "e90c6678-f0d3-4767-9883-5d0ecf5894a8"
+        voice_id = "lt7GBaCoAHWbT7JSZ5Xs"
 
-    initial_speed = max(0.6, min(1.5, float(voice_speed)))
-    tts = CartesiaTTSService(
-        api_key=os.environ["CARTESIA_API_KEY"],
-        settings=CartesiaTTSService.Settings(
-            model="sonic-3.5",
-            language=Language.ZH,
+    initial_speed = max(0.7, min(1.2, float(voice_speed)))
+    tts_model = os.getenv("ELEVENLABS_TTS_MODEL", "eleven_flash_v2_5")
+    tts = ElevenLabsTTSService(
+        api_key=os.environ["ELEVENLABS_API_KEY"],
+        settings=ElevenLabsTTSService.Settings(
+            model=tts_model,
             voice=voice_id,
-            generation_config=GenerationConfig(
-                speed=initial_speed,
-                emotion="content",
-            ),
+            language=Language.ZH,
+            speed=initial_speed,
         ),
     )
 

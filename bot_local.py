@@ -26,8 +26,8 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMUserAggregatorParams,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
-from pipecat.services.cartesia.stt import CartesiaSTTService
-from pipecat.services.cartesia.tts import CartesiaTTSService, GenerationConfig
+from pipecat.services.elevenlabs.stt import ElevenLabsRealtimeSTTService
+from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
 from pipecat.services.llm_service import FunctionCallParams
 from pipecat.services.openrouter.llm import OpenRouterLLMService
 from pipecat.transcriptions.language import Language
@@ -93,11 +93,13 @@ class BotTranscriptLogger(FrameProcessor):
             bd = self._pending_breakdown
             print("\n⏱️  [延迟分析 / Latency Breakdown]:", flush=True)
             if bd.user_turn_secs is not None:
-                print(f"   • 🎙️ VAD静音检测 & Cartesia STT语音识别结算: {bd.user_turn_secs * 1000:.0f} ms", flush=True)
+                print(f"   • 🎙️ VAD静音检测 & STT语音识别结算: {bd.user_turn_secs * 1000:.0f} ms", flush=True)
             for t in bd.ttfb:
                 proc_label = (
                     t.processor
                     .replace("OpenRouterLLMService#0", "🧠 LLM (Cerebras)")
+                    .replace("ElevenLabsTTSService#0", "🔊 TTS (ElevenLabs)")
+                    .replace("ElevenLabsRealtimeSTTService#0", "🎙️ STT (ElevenLabs)")
                     .replace("CartesiaTTSService#0", "🔊 TTS (Cartesia)")
                     .replace("CartesiaSTTService#0", "🎙️ STT (Cartesia)")
                 )
@@ -295,12 +297,11 @@ async def main():
         )
     )
 
-    # 2. Cartesia STT (Chinese Mandarin)
-    stt = CartesiaSTTService(
-        api_key=os.environ["CARTESIA_API_KEY"],
-        settings=CartesiaSTTService.Settings(
+    # 2. ElevenLabs Realtime STT (Scribe v2 Realtime)
+    stt = ElevenLabsRealtimeSTTService(
+        api_key=os.environ["ELEVENLABS_API_KEY"],
+        settings=ElevenLabsRealtimeSTTService.Settings(
             language=Language.ZH,
-            model="ink-whisper",
         ),
     )
 
@@ -331,21 +332,19 @@ async def main():
         },
     )
 
-    # 4. Cartesia TTS (Chinese Conversational Voice)
-    voice_id = os.getenv("CARTESIA_VOICE_ID", "e90c6678-f0d3-4767-9883-5d0ecf5894a8")
+    # 4. ElevenLabs TTS (Chinese / Multilingual Voice)
+    voice_id = os.getenv("ELEVENLABS_VOICE_ID", "lt7GBaCoAHWbT7JSZ5Xs")
     if not voice_id or voice_id == "...":
-        voice_id = "e90c6678-f0d3-4767-9883-5d0ecf5894a8"
+        voice_id = "lt7GBaCoAHWbT7JSZ5Xs"
 
-    tts = CartesiaTTSService(
-        api_key=os.environ["CARTESIA_API_KEY"],
-        settings=CartesiaTTSService.Settings(
-            model="sonic-3.5",
-            language=Language.ZH,
+    tts_model = os.getenv("ELEVENLABS_TTS_MODEL", "eleven_flash_v2_5")
+    tts = ElevenLabsTTSService(
+        api_key=os.environ["ELEVENLABS_API_KEY"],
+        settings=ElevenLabsTTSService.Settings(
+            model=tts_model,
             voice=voice_id,
-            generation_config=GenerationConfig(
-                speed=1.0,
-                emotion="content",
-            ),
+            language=Language.ZH,
+            speed=1.0,
         ),
     )
 
